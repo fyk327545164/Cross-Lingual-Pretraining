@@ -1,28 +1,8 @@
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--model-name', required=True, type=str)
-parser.add_argument('--task-name', required=True, type=str)
-parser.add_argument("--use-context", required=True, type=int)
-parser.add_argument("--segment-length", required=True, type=int)
-parser.add_argument("--context-length", required=True, type=int)
-parser.add_argument("--ckpt-index", required=True, type=int)
-args = parser.parse_args()
-
-CKPT_INDEX = args.ckpt_index
-TASK_NAME = args.task_name
-MODEL_NAME = args.model_name
-SEGMENT_LENGTH = args.segment_length
-USE_CONTEXT = True if args.use_context == 1 else False
-CONTEXT_LENGTH = args.context_length
-
-WARMUP_STEPS = 1000
-LR = 6e-5#- 1e-5*CKPT_INDEX
 
 from transformers import AutoTokenizer, AdamW, default_data_collator
-
-import sys
-import json
-sys.path.append('../')
 
 from torch.nn.modules.loss import CrossEntropyLoss
 from tqdm import tqdm, trange
@@ -39,12 +19,7 @@ import spacy
 
 import torch.utils.data.distributed
 
-
 from datasets import load_dataset
-
-
-nlp = spacy.load("en_core_web_sm")
-metric = load_metric("seqeval")
 
 
 class CrossLingualModel(nn.Module):
@@ -78,35 +53,19 @@ class CrossLingualModel(nn.Module):
         return loss, logits
 
 
-class NERDataset(Dataset):
-    def __init__(self, ds):
-        self.dataset = ds
 
-    def __len__(self):
-        return len(self.dataset)
+LANGUAGE_IDS = ["en","de", "en", "es", "nl", "pl", "ru", "it", "fr", "pt"]
 
-    def __getitem__(self, idx):
-        return self.dataset[idx]
-
-
-LANGUAGE_IDS = ["de", "en", "es", "nl", "pl", "ru", "it", "fr", "pt"]
 # https://github.com/Babelscape/wikineural
 def process_task_data():
-    """
-
-
-    :return: {
-        "train": NERDataset,
-        "test": {
-            "lg": NERDataset,
-            ....
-            }
-        }
-    """
-    raw_datasets = load_dataset(args.dataset_name)
+    raw_datasets = load_dataset("Babelscape/wikineural")# ["train_en", "val_en"])
 
     column_names = raw_datasets["train_en"].column_names
     features = raw_datasets["train_en"].features
+
+    for key in list(raw_datasets.keys()):
+        if "train" in key and key != "train_en":
+            del raw_datasets[key]
 
     text_column_name = "tokens"
     label_column_name = "ner_tags"
@@ -137,15 +96,15 @@ def process_task_data():
     # Map that sends B-Xxx label to its I-Xxx counterpart
     b_to_i_label = []
     for idx, label in enumerate(label_list):
-        if label.startswith("B-") and label.replace("B-", "I-") in label_list:
-            b_to_i_label.append(label_list.index(label.replace("B-", "I-")))
+        if label >= 1 and label % 2 == 1:
+            b_to_i_label.append(idx + 1)
         else:
             b_to_i_label.append(idx)
 
     def tokenize_and_align_labels(examples):
         tokenized_inputs = tokenizer(
             examples[text_column_name],
-            max_length=args.max_length,
+            max_length=128,
             padding="max_length",
             truncation=True,
             # We use this argument because the texts in our dataset are lists of words (with a label for each word).
@@ -177,20 +136,21 @@ def process_task_data():
         return tokenized_inputs
 
     processed_raw_datasets = raw_datasets.map(
-            tokenize_and_align_labels,
-            batched=True,
-            remove_columns=raw_datasets["train_en"].column_names,
-            desc="Running tokenizer on dataset",
+        tokenize_and_align_labels,
+        batched=True,
+        remove_columns=raw_datasets["train_en"].column_names,
+        desc="Running tokenizer on dataset",
     )
 
-    train_dataset = processed_raw_datasets["train"]
+    train_dataset = processed_raw_datasets["train_en"]
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=2
     )
 
     eval_dataloaders = {}
     for lg in LANGUAGE_IDS:
-        eval_dataloaders[lg] = DataLoader(processed_raw_datasets["val_{}".format(lg)], collate_fn=default_data_collator, batch_size=args.per_device_eval_batch_size)
+        eval_dataloaders[lg] = DataLoader(processed_raw_datasets["val_{}".format(lg)], collate_fn=default_data_collator,
+                                          batch_size=2)
 
     return train_dataloader, eval_dataloaders
 
