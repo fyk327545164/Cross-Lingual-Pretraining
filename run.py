@@ -55,7 +55,7 @@ class CrossLingualModel(nn.Module):
         return loss, logits
 
 
-LANGUAGE_IDS = ["en", "de", "en", "es", "nl", "pl", "ru", "it", "fr", "pt"]
+LANGUAGE_IDS = ["en", "de", "es", "nl", "pl", "ru", "it", "fr", "pt"]
 
 
 # https://github.com/Babelscape/wikineural
