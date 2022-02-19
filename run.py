@@ -1,35 +1,35 @@
-import argparse
-parser = argparse.ArgumentParser()
-parser.add_argument('--model-name', required=True, type=str)
+# import argparse
 
-from transformers import AutoTokenizer, AdamW, default_data_collator
+# parser = argparse.ArgumentParser()
+# parser.add_argument('--model-name', required=True, type=str)
+
+from transformers import AutoTokenizer, AdamW, default_data_collator, XLMRobertaModel
 
 from torch.nn.modules.loss import CrossEntropyLoss
 from tqdm import tqdm, trange
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch
-import random
-import pickle
-import numpy as np
-import os
 from datasets import load_metric, ClassLabel
-
-import spacy
-
 import torch.utils.data.distributed
 
 from datasets import load_dataset
 
+metric = load_metric("seqeval")
+
+global_label_list = ['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
+
+
+LR_PRETRAIN = 0.00001
+LR_FINETUNE = 0.00006
+WARMUP_STEPS = 500
 
 class CrossLingualModel(nn.Module):
-    def __init__(self, num_labels=8):
+    def __init__(self, num_labels=len(global_label_list)):
         super().__init__()
 
-        self.model = Seq2Seq.get_enecoder_model(args.model_name, use_context=True if args.use_context == 1 else False,
-                                             segment_length=args.segment_length,
-                                             context_length=args.context_length,
-                                             use_global=False)
+        self.xlm = XLMRobertaModel.from_pretrained("xlm-roberta-base")
+
         self.hidden_size = 768
         self.num_labels = num_labels
 
@@ -38,27 +38,29 @@ class CrossLingualModel(nn.Module):
 
         self.loss = CrossEntropyLoss()
 
-    def forward(self, input_ids, label_ids=None):
-        attention_mask = torch.ones(input_ids.size()).cuda().long()
+    def forward(self, input_ids, attention_mask, ner_labels=None):
+        input_ids = input_ids.to(self.xlm.device)
+        attention_mask = attention_mask.to(self.xlm.device)
 
-        outputs = self.model(input_ids, mask=attention_mask)
+        outputs = self.xlm(input_ids, mask=attention_mask)
 
         sequence_output = self.dropout(outputs[0])
         logits = self.classifier(sequence_output)
 
         loss = None
-        if label_ids is not None:
-            loss = self.loss(logits.view(-1, self.num_labels), label_ids.view(-1))
+        if ner_labels is not None:
+            ner_labels = ner_labels.to(self.xlm.device)
+            loss = self.loss(logits.view(-1, self.num_labels), ner_labels.view(-1))
 
         return loss, logits
 
 
+LANGUAGE_IDS = ["en", "de", "en", "es", "nl", "pl", "ru", "it", "fr", "pt"]
 
-LANGUAGE_IDS = ["en","de", "en", "es", "nl", "pl", "ru", "it", "fr", "pt"]
 
 # https://github.com/Babelscape/wikineural
 def process_task_data():
-    raw_datasets = load_dataset("Babelscape/wikineural")# ["train_en", "val_en"])
+    raw_datasets = load_dataset("Babelscape/wikineural")  # ["train_en", "val_en"])
 
     column_names = raw_datasets["train_en"].column_names
     features = raw_datasets["train_en"].features
@@ -132,7 +134,7 @@ def process_task_data():
                 previous_word_idx = word_idx
 
             labels.append(label_ids)
-        tokenized_inputs["labels"] = labels
+        tokenized_inputs["ner_labels"] = labels
         return tokenized_inputs
 
     processed_raw_datasets = raw_datasets.map(
@@ -153,103 +155,6 @@ def process_task_data():
                                           batch_size=2)
 
     return train_dataloader, eval_dataloaders
-
-
-def process_parallel_data():
-
-    return
-
-
-
-
-
-
-
-
-def process_data(tokenizer, mode="train"):
-
-    if os.path.exists("{}-cache-{}".format(mode, TASK_NAME)):
-
-        with open("{}-cache-{}".format(mode, TASK_NAME), 'rb') as fr:
-            docs = pickle.load(fr)
-    else:
-
-        label_to_id = {"MV": 1, "GP": 2, "FP": 3, "BG": 4, "PL": 5, "PC": 6, "HS": 7}
-        # Music Video: [MV-B], [MV-I]
-        # Game Play: [GP-B], [GP-I]
-        # Film Plot: [FP-B], [FP-I]
-        # Building Geography: [BG-B], [BG-I]
-        # Person Life: [PL-B], [PL-I]
-        # Person Career: [PC-B], [PC-I]
-        # Other history: [HIS-B], [HIS-I]
-
-        docs = []
-        with open("{}-text".format(mode), 'r', encoding='utf-8') as fr:
-            lines = fr.readlines()
-
-        for line in tqdm(lines):
-            sents = nlp(line)
-            doc_input_ids = []
-            doc_label_ids = []
-
-            sent_label = 0
-            breaked = False
-            for sent_str in list(sents.sents):
-                sent = str(sent_str)
-
-                if "-END-TAG]" in sent:
-                    sent_label = 0
-                    label = sent[sent.index('-END-TAG]') - 2:sent.index('-END-TAG]')]
-                    # if label  in label_to_id:
-                    # else:
-                    #     label = sent[sent.index('-END]')-3:sent.index('-END]')]
-                    #     sent_label = label_to_id[label]
-                    full_label = "[" + label + "-END-TAG]"
-                    sent = sent.replace(full_label, "")
-
-                if "-BEGIN-TAG]" in sent:
-                    try:
-                        assert sent_label == 0
-                    except:
-                        breaked = True
-                        print("breaked")
-                        break
-                    label = sent[sent.index('-BEGIN-TAG]') - 2:sent.index('-BEGIN-TAG]')]
-                    # if label  in label_to_id:
-                    sent_label = label_to_id[label]
-                    # else:
-                    #     label = sent[sent.index('-BEGIN-TAG]')-3:sent.index('-BEGIN-TAG]')]
-                    #     sent_label = label_to_id[label]
-                    full_label = "[" + label + "-BEGIN-TAG]"
-                    sent = sent.replace(full_label, "")
-
-                # print(sent_label)
-
-                cur_tokens = tokenizer.tokenize(sent)
-                cur_tokens = [tokenizer.cls_token] + cur_tokens[:] + [tokenizer.sep_token]
-
-                input_ids = tokenizer.convert_tokens_to_ids(cur_tokens)
-                label_ids = [-100 for _ in range(len(input_ids))]
-                label_ids[0] = sent_label
-
-                doc_input_ids += input_ids
-                doc_label_ids += label_ids
-            if breaked:
-                continue
-            docs.append([doc_input_ids, doc_label_ids])
-
-        with open("{}-cache-{}".format(mode, TASK_NAME), 'wb') as fw:
-            pickle.dump(docs, fw)
-    return docs#:100]
-    pad_index = tokenizer.pad_token_id
-    new_docs = []
-    for doc in docs:
-        doc_input_ids, doc_label_ids = doc
-        if len(doc_input_ids) % 2 == 0:
-            doc_input_ids.append(pad_index)
-            doc_label_ids.append(-100)
-        new_docs.append([doc_input_ids, doc_label_ids])
-    return new_docs
 
 
 class ReverseSqrtScheduler:
@@ -281,35 +186,24 @@ class ReverseSqrtScheduler:
 
 
 def main():
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    except:
-        tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+    train_dataloader, eval_dataloaders = process_task_data()
 
-    train_dataloader = DataLoader(dataset=RegionDetectionDataset(process_data(tokenizer, "train")), pin_memory=True,
-                                  batch_size=1, shuffle=True)
-    test_dataloader = DataLoader(dataset=RegionDetectionDataset(process_data(tokenizer, "test")), pin_memory=True,
-                                 batch_size=1, shuffle=True)
-
-    model = RegionDetectionModel()
+    model = CrossLingualModel()
     model.cuda()
-    optimizer = AdamW(model.parameters(), lr=LR)
-    scheduler = ReverseSqrtScheduler(optimizer, [LR], WARMUP_STEPS)
+
+    pretrained_params = []
+    finetune_params = []
+    for (name, p) in model.named_parameters():
+        if "xlm" in name:
+            pretrained_params.append(p)
+        else:
+            finetune_params.append(p)
+
+    optimizer = AdamW(
+        [{'params': pretrained_params, 'lr': LR_PRETRAIN}, {'params': finetune_params, 'lr': LR_FINETUNE}])
+    scheduler = ReverseSqrtScheduler(optimizer, [LR_PRETRAIN, LR_FINETUNE], WARMUP_STEPS)
 
     epoch_start = 0
-    if CKPT_INDEX != 0:
-        checkpoint = torch.load("ckpt-{}-{}-{}".format(TASK_NAME, USE_CONTEXT, CKPT_INDEX-1))
-        epoch_start = checkpoint["epoch"]+1
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        _scheduler = checkpoint["scheduler"]
-        scheduler.n_steps = _scheduler.n_steps
-    #optimizer = AdamW(model.parameters(), lr=LR)
-    #scheduler = ReverseSqrtScheduler(optimizer, [LR], WARMUP_STEPS)
-
-    with torch.no_grad():
-        model.eval()
-        evaluate(model, test_dataloader)
 
     for epoch in range(epoch_start, 100):
         model.train()
@@ -317,29 +211,29 @@ def main():
         update_step = 0
 
         for batch in tqdm(train_dataloader):
-            input_ids, label_ids = batch
-            input_ids = torch.Tensor([input_ids]).cuda().long()
-            label_ids = torch.Tensor([label_ids]).cuda().long()
-            loss, _ = model(input_ids, label_ids)
+            loss, _ = model(**batch)
             all_loss += loss.item()
             loss.backward()
             scheduler.step_and_update_lr()
             scheduler.zero_grad()
             update_step += 1
-            #if update_step % 100 == 0:
-            #    print("Update Steps {} loss: {}\n".format(update_step, all_loss / update_step))
 
         print("epoch: {}, Update Steps {}, loss: {}\n".format(epoch, update_step, all_loss / update_step))
         with torch.no_grad():
             model.eval()
-            evaluate(model, test_dataloader)
-        torch.save({"epoch":epoch, "model_state_dict":model.state_dict(),"optimizer_state_dict":optimizer.state_dict(), "scheduler":scheduler}, "ckpt-{}-{}-{}".format(TASK_NAME, USE_CONTEXT, CKPT_INDEX))
+            evaluate(model, eval_dataloaders)
+
+        torch.save({"epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler": scheduler},
+                   "ckpt-{}".format(epoch))
 
 
 def compute_metrics(p):
     predictions, labels = p
-    label_list = ["O", "MV", "GP", "FP", "BG", "PL", "PC", "HS"]
-    # Remove ignored index (special tokens)
+    label_list = global_label_list
+
     true_predictions = [
         [label_list[int(p)] for (p, l) in zip(prediction, label) if l != -100]
         for prediction, label in zip(predictions, labels)
@@ -349,7 +243,7 @@ def compute_metrics(p):
         for prediction, label in zip(predictions, labels)
     ]
 
-    with open("results", 'w') as fw:
+    with open("results", 'a') as fw:
         for p, t in zip(true_predictions, true_labels):
             fw.write("{} {} \n".format(p, t))
     results = metric.compute(predictions=true_predictions, references=true_labels)
@@ -360,28 +254,32 @@ def compute_metrics(p):
            "accuracy": results["overall_accuracy"]})
 
 
-def evaluate(model, dataloader):
+def evaluate(model, dataloaders):
+    for lg, dataloader in dataloaders.items():
+        with open("results", 'a') as fw:
+            fw.write(lg+'\n')
+        print(lg)
+        _evaluate(model, dataloader)
+
+
+def _evaluate(model, dataloader):
     preds = []
     targets = []
 
     for batch in tqdm(dataloader):
-        input_ids, label_ids  = batch
-        #batch = torch.transpose(batch, 0, 2)
-        #input_ids, attention_mask, label_ids = batch
-        input_ids = torch.Tensor([input_ids]).to("cuda").long()
-        #print(input_ids.size())
-        label_ids = torch.Tensor([label_ids])
-        #attention_mask = attention_mask.to("cuda").long()
+        input_ids, attention_mask, label_ids = batch
+        input_ids = input_ids.cuda()
+        attention_mask = attention_mask.cuda()
         label_ids = label_ids.view(-1, 1).tolist()
-        _, logits = model(input_ids)
+
+        _, logits = model(input_ids, attention_mask)
         logits = logits.cpu()
-        #rint(logits.size())
         index = torch.argmax(logits, -1).view(-1, 1).tolist()
-        #print(len(index), len(label_ids))
-        #assert len(index) == len(label_ids)
+
         preds += index[:]
         targets += label_ids[:]
-    # print(preds, targets)
+
     compute_metrics((preds, targets))
+
 
 main()
