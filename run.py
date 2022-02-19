@@ -42,7 +42,7 @@ class CrossLingualModel(nn.Module):
         input_ids = input_ids.to(self.xlm.device)
         attention_mask = attention_mask.to(self.xlm.device)
 
-        outputs = self.xlm(input_ids, mask=attention_mask)
+        outputs = self.xlm(input_ids, attention_mask)
 
         sequence_output = self.dropout(outputs[0])
         logits = self.classifier(sequence_output)
@@ -146,13 +146,13 @@ def process_task_data():
 
     train_dataset = processed_raw_datasets["train_en"]
     train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=2
+        train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=64
     )
 
     eval_dataloaders = {}
     for lg in LANGUAGE_IDS:
         eval_dataloaders[lg] = DataLoader(processed_raw_datasets["val_{}".format(lg)], collate_fn=default_data_collator,
-                                          batch_size=2)
+                                          batch_size=64)
 
     return train_dataloader, eval_dataloaders
 
@@ -202,6 +202,10 @@ def main():
     optimizer = AdamW(
         [{'params': pretrained_params, 'lr': LR_PRETRAIN}, {'params': finetune_params, 'lr': LR_FINETUNE}])
     scheduler = ReverseSqrtScheduler(optimizer, [LR_PRETRAIN, LR_FINETUNE], WARMUP_STEPS)
+
+    with torch.no_grad():
+      model.eval()
+      evaluate(model, eval_dataloaders)
 
     epoch_start = 0
 
@@ -267,12 +271,12 @@ def _evaluate(model, dataloader):
     targets = []
 
     for batch in tqdm(dataloader):
-        input_ids, attention_mask, label_ids = batch
-        input_ids = input_ids.cuda()
-        attention_mask = attention_mask.cuda()
-        label_ids = label_ids.view(-1, 1).tolist()
+        # input_ids, attention_mask, label_ids = batch
+        # input_ids = input_ids.cuda()
+        # attention_mask = attention_mask.cuda()
+        label_ids = batch["ner_labels"].view(-1, 1).tolist()
 
-        _, logits = model(input_ids, attention_mask)
+        _, logits = model(batch["input_ids"], batch["attention_mask"])
         logits = logits.cpu()
         index = torch.argmax(logits, -1).view(-1, 1).tolist()
 
