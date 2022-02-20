@@ -247,15 +247,18 @@ def compute_metrics(p):
         for prediction, label in zip(predictions, labels)
     ]
 
-    with open("results", 'a') as fw:
-        for p, t in zip(true_predictions, true_labels):
-            fw.write("{} {} \n".format(p, t))
+
     results = metric.compute(predictions=true_predictions, references=true_labels)
 
-    print({"precision": results["overall_precision"],
+    res = {"precision": results["overall_precision"],
            "recall": results["overall_recall"],
            "f1": results["overall_f1"],
-           "accuracy": results["overall_accuracy"]})
+           "accuracy": results["overall_accuracy"]}
+    with open("results", 'a') as fw:
+        fw.write(str(res) +'\n')
+
+    print(res)
+
 
 
 def evaluate(model, dataloaders):

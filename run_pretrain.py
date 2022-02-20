@@ -14,8 +14,9 @@ import torch.utils.data.distributed
 import random
 
 import os
+
 # os.system("wget -O ende.zip https://opus.nlpl.eu/download.php?f=News-Commentary/v16/moses/de-en.txt.zip")
-# os.system("unzip ende.zip")
+# s.system("unzip ende.zip")
 
 
 lg = ["en", "de"]
@@ -31,17 +32,19 @@ class CrossLingualModel(nn.Module):
 
         self.xlm = XLMRobertaModel.from_pretrained("xlm-roberta-base")
 
-        self.align_embedding = self.xlm.embeddings.word_embeddings.weight.clone()  # V * D
-
+        initialized_align_embedding = self.xlm.embeddings.word_embeddings.weight.data.clone()  # V * D
+        self.align_embedding = nn.Parameter(initialized_align_embedding)
         print(self.align_embedding.size())
 
         self.hidden_size = 768
 
-        self.lg_projections = {}
+        self.key_to_index = {}
+        self.lg_projections = []
         for i in range(num_lg):
             for j in range(num_lg):
-                self.lg_projections["{}-{}".format(i, j)] = nn.Linear(self.hidden_size, self.hidden_size)
-
+                self.key_to_index["{}-{}".format(i, j)] = len(self.lg_projections)
+                self.lg_projections.append(nn.Linear(self.hidden_size, self.hidden_size))
+        self.lg_projections = nn.ModuleList(self.lg_projections)
         self.dropout = nn.Dropout(0.1)
 
         # self.classifier = nn.Linear(self.hidden_size, self.num_labels)
@@ -56,14 +59,14 @@ class CrossLingualModel(nn.Module):
 
         sequence_output = self.dropout(outputs[0])
 
-        logits_src = self.lg_projections["{}-{}".format(lg_in, lg_in)](sequence_output)
-        logits_tgt = self.lg_projections["{}-{}".format(lg_in, lg_out)](sequence_output)
+        logits_src = self.lg_projections[self.key_to_index["{}-{}".format(lg_in, lg_in)]](sequence_output)
+        logits_tgt = self.lg_projections[self.key_to_index["{}-{}".format(lg_in, lg_out)]](sequence_output)
 
         logits_src = torch.matmul(logits_src, self.align_embedding.T)  # T * V
         logits_tgt = torch.matmul(logits_tgt, self.align_embedding.T)  # T * V
 
-        logits_src = logits_src.transpose(1,2)  # V * T
-        logits_tgt = logits_tgt.transpose(1,2)  # V * T
+        logits_src = logits_src.transpose(1, 2)  # V * T
+        logits_tgt = logits_tgt.transpose(1, 2)  # V * T
 
         logits_src = torch.sum(logits_src * nn.Softmax(dim=-1)(logits_src), -1)
         logits_tgt = torch.sum(logits_tgt * nn.Softmax(dim=-1)(logits_tgt), -1)
@@ -177,7 +180,7 @@ def main():
     train_dataset = AlignDataset(process_task_data(tokenizer))
     train_dataloader = DataLoader(dataset=train_dataset, pin_memory=True, batch_size=8, shuffle=True)
 
-    # model.cuda()
+    model = model.to("cuda")
 
     pretrained_params = []
     finetune_params = []
@@ -216,8 +219,12 @@ def main():
                 labels_src = torch.zeros((src_input_ids.size()[0], tokenizer.vocab_size))
                 labels_tgt = torch.zeros((tgt_input_ids.size()[0], tokenizer.vocab_size))
 
-                labels_src[torch.arange(labels_src.size(0)).unsqueeze(1), src_input_ids.masked_fill(tgt_input_ids == -100, tokenizer.eos_token_id)] = 1
-                labels_tgt[torch.arange(labels_tgt.size(0)).unsqueeze(1), tgt_input_ids.masked_fill(tgt_input_ids == -100, tokenizer.eos_token_id)] = 1
+                labels_src[
+                    torch.arange(labels_src.size(0)).unsqueeze(1), src_input_ids.masked_fill(tgt_input_ids == -100,
+                                                                                             tokenizer.eos_token_id)] = 1
+                labels_tgt[
+                    torch.arange(labels_tgt.size(0)).unsqueeze(1), tgt_input_ids.masked_fill(tgt_input_ids == -100,
+                                                                                             tokenizer.eos_token_id)] = 1
 
                 # for src_label_list in src_input_ids_list:
                 #     cur_src_label = [0 for _ in range(tokenizer.vocab_size)]
@@ -239,8 +246,12 @@ def main():
                 labels_src = torch.zeros((src_input_ids.size()[0], tokenizer.vocab_size))
                 labels_tgt = torch.zeros((tgt_input_ids.size()[0], tokenizer.vocab_size))
 
-                labels_src[torch.arange(labels_src.size(0)).unsqueeze(1), tgt_input_ids.masked_fill(tgt_input_ids == -100, tokenizer.eos_token_id)] = 1
-                labels_tgt[torch.arange(labels_tgt.size(0)).unsqueeze(1), src_input_ids.masked_fill(tgt_input_ids == -100, tokenizer.eos_token_id)] = 1
+                labels_src[
+                    torch.arange(labels_src.size(0)).unsqueeze(1), tgt_input_ids.masked_fill(tgt_input_ids == -100,
+                                                                                             tokenizer.eos_token_id)] = 1
+                labels_tgt[
+                    torch.arange(labels_tgt.size(0)).unsqueeze(1), src_input_ids.masked_fill(tgt_input_ids == -100,
+                                                                                             tokenizer.eos_token_id)] = 1
 
             labels_src[:, tokenizer.eos_token_id] = 0
             labels_tgt[:, tokenizer.eos_token_id] = 0
