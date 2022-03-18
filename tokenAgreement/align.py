@@ -2,7 +2,6 @@ from tqdm import trange
 from transformers import AutoTokenizer
 import pickle
 
-
 def create_parallel_data():
     tokenizer = AutoTokenizer.from_pretrained("bert-base-multilingual-cased")
 
@@ -39,10 +38,15 @@ def create_parallel_dict():
                 lg_2_index = int(lg_2_index)
 
                 lg_1_token = lg_1_tokens[lg_1_index].lower()
-                if lg_1_token not in dict:
-                    dict[lg_1_token] = []
-                dict[lg_1_token].append(lg_2_tokens[lg_2_index].lower())
-
+                #f lg_1_token not in dict:
+                #    dict[lg_1_token] = []
+                lg_2_token = lg_2_tokens[lg_2_index]
+                if lg_1_token != lg_2_token:
+                    if lg_1_token not in dict:
+                        dict[lg_1_token] = []
+                    #rint(lg_1_token)
+                    dict[lg_1_token].append(lg_2_token)
+    #rint(dict)
     with open("aligned_tokens", "wb") as fw:
         pickle.dump(dict, fw)
 
