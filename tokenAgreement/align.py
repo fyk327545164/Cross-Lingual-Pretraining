@@ -4,6 +4,7 @@ import pickle
 import os
 
 
+
 class Aligner:
     def __init__(self, src_lang, tgt_lang, data_root=None, tokenizer_model="bert-base-multilingual-cased"):
         self.data_root = "../data/" if data_root is None else data_root
@@ -15,6 +16,7 @@ class Aligner:
         self.tokenizer_name = tokenizer_model
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_model)
         self.parallel_data_folder = f"{self.data_root}{self.lang_pair}/"
+
 
     def create_parallel_data(self):
         filename_src = f"{self.parallel_data_folder}News-Commentary.{self.lang_pair}.{self.src_lang}"
@@ -81,12 +83,17 @@ class Aligner:
                     lg_2_index = int(lg_2_index)
 
                     lg_1_token = lg_1_tokens[lg_1_index].lower()
-                    if lg_1_token not in dict:
-                        dict[lg_1_token] = []
-                    dict[lg_1_token].append(lg_2_tokens[lg_2_index].lower())
+                    #f lg_1_token not in dict:
+                    #    dict[lg_1_token] = []
+                    lg_2_token = lg_2_tokens[lg_2_index]
+                    if lg_1_token != lg_2_token:
+                        if lg_1_token not in dict:
+                            dict[lg_1_token] = []
+                        dict[lg_1_token].append(lg_2_token)
 
-        with open(align_table_file_path, "wb") as fw:
-            pickle.dump(dict, fw)
+    with open("aligned_tokens", "wb") as fw:
+        pickle.dump(dict, fw)
+
 
 
 en_ru_aligner = Aligner("en", "ru")

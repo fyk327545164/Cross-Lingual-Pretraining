@@ -1,4 +1,4 @@
-from transformers import AutoTokenizer, AdamW, default_data_collator, BertModel, BatchEncoding
+from transformers import AutoTokenizer, AdamW, default_data_collator, XLMRobertaModel, BertModel, BatchEncoding
 from torch.nn.modules.loss import CrossEntropyLoss
 from tqdm import tqdm, trange
 from torch.utils.data import DataLoader
@@ -6,12 +6,18 @@ import torch.nn as nn
 import torch
 from datasets import load_metric, ClassLabel
 import torch.utils.data.distributed
+from datasets import Dataset
 
 from datasets import load_dataset
 import pickle
 import random
 
 import argparse
+import numpy as np
+
+np.random.seed(1234)
+torch.manual_seed(1234)
+random.seed(1234)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--ratio', required=True, type=int)
@@ -25,8 +31,8 @@ LR_PRETRAIN = 0.00008
 LR_FINETUNE = 0.00008
 WARMUP_STEPS = 500
 
-
 MODEL_NAME = "bert-base-multilingual-cased"
+import os
 
 with open("aligned_tokens", "rb") as fr:
     aligned_tokens = pickle.load(fr)
@@ -35,9 +41,12 @@ with open("aligned_tokens", "rb") as fr:
 # for key, val in _aligned_index.items():
 #     aligned_index[key] = [Counter(val).most_common()[0][0]]
 
-random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10-args.ratio)]
+random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10 - args.ratio)]
 random.shuffle(random_index)
+print(random_index)
 
+
+# random.seed(1234)
 
 def data_collator(features):
     """
@@ -98,6 +107,7 @@ def data_collator(features):
 
     return batch
 
+
 class CrossLingualModel(nn.Module):
     def __init__(self, num_labels=len(global_label_list)):
         super().__init__()
@@ -112,11 +122,10 @@ class CrossLingualModel(nn.Module):
 
         self.loss = CrossEntropyLoss()
 
-
     def forward(self, input_ids, attention_mask, ner_labels=None, **kwargs):
         input_ids = input_ids.to(self.xlm.device)
         attention_mask = attention_mask.to(self.xlm.device)
-
+        # rint(input_ids.size())
         outputs = self.xlm(input_ids, attention_mask)
 
         sequence_output = self.dropout(outputs[0])
@@ -132,16 +141,19 @@ class CrossLingualModel(nn.Module):
 
 LANGUAGE_IDS = ["en", "ru"]  # , "es", "nl", "pl", "ru", "it", "fr", "pt"]
 
+lg_set = {"val_en", "val_ru", "train_en"}
+
 
 # https://github.com/Babelscape/wikineural
 def process_task_data():
-    raw_datasets = load_dataset("Babelscape/wikineural")  # ["train_en", "val_en"])
+    raw_datasets = load_dataset("Babelscape/wikineural",
+                                cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")  # ["train_en", "val_en"])
 
     column_names = raw_datasets["train_en"].column_names
     features = raw_datasets["train_en"].features
 
     for key in list(raw_datasets.keys()):
-        if "train" in key and key != "train_en":
+        if key not in lg_set:
             del raw_datasets[key]
 
     text_column_name = "tokens"
@@ -234,23 +246,37 @@ def process_task_data():
 
 # https://github.com/Babelscape/wikineural
 def get_train_dataloader():
-    raw_datasets = load_dataset("Babelscape/wikineural")  # ["train_en", "val_en"])
-    train_en = raw_datasets["train_en"]["tokens"][:]
-    for i in trange(len(train_en)):
-        for token_i in range(len(train_en[i])):
-            cur_token = train_en[i][token_i].lower()
-            if cur_token in aligned_tokens and random.choice(random_index) == 0:
-                train_en[i][token_i] = random.choice(aligned_tokens[cur_token])
-    raw_datasets["train_en"].tokens = train_en[:]
+    raw_datasets = load_dataset("Babelscape/wikineural", keep_in_memory=True,
+                                cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")  # ["train_en", "val_en"])
+    train_en_tokens = raw_datasets["train_en"]["tokens"][:]
+    train_en_labels = raw_datasets["train_en"]["ner_tags"][:]
 
+    for i in trange(len(train_en_tokens)):
+        for token_i in range(len(train_en_tokens[i])):
+            cur_token = train_en_tokens[i][token_i].lower()
+            if cur_token in aligned_tokens:
+                if random.choice(random_index) == 0:
+                    # rint("---------")
+                    train_en_tokens[i][token_i] = random.choice(aligned_tokens[cur_token])
+    raw_datasets["train_en"] = raw_datasets["train_en"].add_column("new_tokens", train_en_tokens)
+    # rint(raw_datasets.column_names)
+    # print(raw_datasets["train_en"].column_names)
+    # raw_datasets["train_en"].add_column(new_tokens",train_en_tokens)
+    # print(raw_datasets["train_en"]["new_tokens"][10], train_en_tokens[10])
+    # print(raw_datasets["train_en"]["new_tokens"][100], train_en_tokens[100])
+    # print(raw_datasets["train_en"]["new_tokens"][200], train_en_tokens[200])
+    # print(raw_datasets["train_en"]["new_tokens"][300],train_en_tokens[300])
+    # print(raw_datasets["train_en"]["new_tokens"][400], train_en_tokens[400])
+
+    # raw_datasets = Dataset.from_dict({"train_en":{"tokens": train_en_tokens, "ner_tags": train_en_labels}})
     column_names = raw_datasets["train_en"].column_names
     features = raw_datasets["train_en"].features
 
     for key in list(raw_datasets.keys()):
-        if "train" in key and key != "train_en":
+        if key != "train_en":
             del raw_datasets[key]
 
-    text_column_name = "tokens"
+    text_column_name = "new_tokens"
     label_column_name = "ner_tags"
     lang_column_name = "lang"
 
@@ -321,6 +347,7 @@ def get_train_dataloader():
     processed_raw_datasets = raw_datasets.map(
         tokenize_and_align_labels,
         batched=True,
+        keep_in_memory=True,
         remove_columns=raw_datasets["train_en"].column_names,
         desc="Running tokenizer on dataset",
     )
@@ -383,11 +410,20 @@ def main():
             scheduler.step_and_update_lr()
             scheduler.zero_grad()
             update_step += 1
+            # if update_step % 100 == 0:
+            #     print("epoch: {}, Update Steps {}, loss: {}\n".format(epoch, update_step, all_loss / update_step))
+            # f update_step % 1000 == 0:
+            #    print("epoch: {}, Update Steps {}, loss: {}\n".format(epoch, update_step, all_loss / update_step))
+            #    with torch.no_grad():
+            #        model.eval()
+            #        evaluate(model, eval_dataloaders)
 
+            # model.train()
         print("epoch: {}, Update Steps {}, loss: {}\n".format(epoch, update_step, all_loss / update_step))
         with torch.no_grad():
             model.eval()
             evaluate(model, eval_dataloaders)
+        # s.system("rm data/huggingface/parquet/Babelscape--wikineural-2c05bc228ce4015c/0.0.0/0b6d5799bb726b24ad7fc7be720c170d8e497f575d02d47537de9a5bac074901/*")
 
 
 def compute_metrics(p):
