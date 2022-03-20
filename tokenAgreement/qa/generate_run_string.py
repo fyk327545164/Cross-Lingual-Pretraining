@@ -4,7 +4,7 @@ from sys import platform
 ON_COLAB = 'google.colab' in sys.modules
 ON_CLUSTER = False if ON_COLAB else platform == "linux" or platform == "linux2"
 
-MODEL_NAME = "xlm-roberta-base"
+MODEL_NAME = "bert-base-multilingual-cased"
 DATASET = "squad"
 MAX_LANG = 384
 DOC_STRIDE = 123

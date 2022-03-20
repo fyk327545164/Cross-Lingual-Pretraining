@@ -2,6 +2,7 @@ import argparse
 import logging
 import math
 import os
+import pickle
 import random
 from pathlib import Path
 
@@ -81,6 +82,7 @@ def parse_args():
 
     """
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a Question Answering task")
+    parser.add_argument('--ratio', required=True, type=int)
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -265,6 +267,14 @@ def parse_args():
 def main():
     args = parse_args()
 
+    with open("../../data/en-ru/en-ru_bert-base-multilingual-cased_table", "rb") as fr:
+        aligned_tokens_table = pickle.load(fr)
+
+    random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10 - args.ratio)]
+    random.shuffle(random_index)
+    print(random_index)
+
+
     accelerator = Accelerator()
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -364,6 +374,61 @@ def main():
         # truncation of the context fail (the tokenized question will take a lots of space). So we remove that
         # left whitespace
         examples[question_column_name] = [q.lstrip() for q in examples[question_column_name]]
+
+        for idx in range(len(examples[context_column_name])):
+            context = examples[context_column_name][idx]
+
+            start = 0
+            end = 0
+            context_tokens = []
+            context_tokens_idx = []
+            is_space = context[start] == ' '
+            while start < len(context):
+                new_is_space = context[start] == ' '
+                if new_is_space == is_space:
+                    start += 1
+                else:
+                    sub_string = context[end:start]
+                    if len(sub_string.lstrip()) > 0:
+                        context_tokens.append(sub_string)
+                        context_tokens_idx.append(end)
+                    is_space = new_is_space
+                    end = start
+                    start += 1
+            context_tokens.append(context[end:start])
+            context_tokens_idx.append(end)
+
+            answers_text = examples[answer_column_name][idx]["text"][0]
+            answers_start = examples[answer_column_name][idx]["answer_start"][0]
+            answer_range = (answers_start, answers_start + len(answers_text))
+
+            question_tokens = examples[question_column_name][idx].split()
+            for token_idx in range(len(question_tokens)):
+                cur_token = question_tokens[token_idx].lower()
+                if cur_token in aligned_tokens_table:
+                    if random.choice(random_index) == 0:
+                        question_tokens[token_idx] = random.choice(aligned_tokens_table[cur_token])
+            examples[question_column_name][idx] = " ".join(question_tokens)
+
+            orginal_context = examples[context_column_name][idx][:]
+
+            for token_idx in range(len(context_tokens)):
+                cur_token, cur_token_idx = context_tokens[token_idx], context_tokens_idx[token_idx]
+                cur_token = cur_token.lower()
+                if not (answer_range[0] <= cur_token_idx <= answer_range[1]) and cur_token in aligned_tokens_table:
+                    if random.choice(random_index) == 0:
+                        context_tokens[token_idx] = random.choice(aligned_tokens_table[cur_token])
+            examples[context_column_name][idx] = " ".join(context_tokens)
+
+            new_answer_start = []
+            for answer in answers_text:
+                if answer in examples[context_column_name][idx]:
+                    new_answer_start.append(examples[context_column_name][idx].index(answer))
+                else:
+                    print(f"idx: {idx}, context: {examples[context_column_name][idx]}")
+                    print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}")
+                    print(f"idx: {idx}, answer: {orginal_context}")
+            examples[answer_column_name][idx]["answer_start"] = new_answer_start
 
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
