@@ -244,6 +244,18 @@ def parse_args():
     parser.add_argument(
         "--overwrite_cache", type=bool, default=False, help="Overwrite the cached training and evaluation sets"
     )
+    parser.add_argument(
+        "--validation_datasets",
+        type=str,
+        default=None,
+        help="The name of the validation dataset to use (via the datasets library).",
+    )
+    parser.add_argument(
+        "--validation_lang",
+        type=str,
+        default=None,
+        help="The type of language the validation dataset to use (via the datasets library)",
+    )
     args = parser.parse_args()
     if (
             args.dataset_name is None
@@ -264,6 +276,7 @@ def parse_args():
             assert extension in ["csv", "json"], "`test_file` should be a csv or a json file."
     return args
 
+
 def main():
     args = parse_args()
 
@@ -273,7 +286,6 @@ def main():
     random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10 - args.ratio)]
     random.shuffle(random_index)
     print(random_index)
-
 
     accelerator = Accelerator()
     logging.basicConfig(
@@ -304,6 +316,9 @@ def main():
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
+    if args.validation_datasets is not None:
+        validation_rawdata = load_dataset(args.validation_datasets, args.validation_lang)
+
     else:
         data_files = {}
         if args.train_file is not None:
@@ -569,9 +584,12 @@ def main():
 
         return tokenized_examples
 
-    if "validation" not in raw_datasets:
+    if "validation" not in validation_rawdata:
         raise ValueError("--do_eval requires a validation dataset")
-    eval_examples = raw_datasets["validation"]
+
+    eval_examples = validation_rawdata["validation"]
+    validation_column_names = validation_rawdata["validation"].column_names
+
     if args.max_eval_samples is not None:
         # We will select sample from whole data
         eval_examples = eval_examples.select(range(args.max_eval_samples))
@@ -581,7 +599,7 @@ def main():
             prepare_validation_features,
             batched=True,
             num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
+            remove_columns=validation_column_names,
             load_from_cache_file=not args.overwrite_cache,
             desc="Running tokenizer on validation dataset",
         )
@@ -693,7 +711,7 @@ def main():
             cols = output_logit.shape[1]
 
             if step + batch_size < len(dataset):
-                logits_concat[step : step + batch_size, :cols] = output_logit
+                logits_concat[step: step + batch_size, :cols] = output_logit
             else:
                 logits_concat[step:, :cols] = output_logit[: len(dataset) - step]
 
@@ -755,9 +773,15 @@ def main():
 
     for epoch in range(args.num_train_epochs):
         model.train()
+        epoch_loss = 0
+        epoch_step = 0
         for step, batch in enumerate(train_dataloader):
             outputs = model(**batch)
             loss = outputs.loss
+
+            epoch_loss += loss.item()
+            epoch_step += 1
+
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -766,6 +790,45 @@ def main():
                 optimizer.zero_grad()
                 progress_bar.update(1)
                 completed_steps += 1
+
+            if completed_steps % 1000 == 0:
+                print(f"\n step :{completed_steps} loss: {epoch_loss/epoch_step}")
+            if completed_steps % 10000 == 0:
+                model.eval()
+                all_start_logits = []
+                all_end_logits = []
+                for step, batch in enumerate(eval_dataloader):
+                    with torch.no_grad():
+                        outputs = model(**batch)
+                        start_logits = outputs.start_logits
+                        end_logits = outputs.end_logits
+
+                        if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
+                            start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
+                            end_logits = accelerator.pad_across_processes(end_logits, dim=1, pad_index=-100)
+
+                        all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
+                        all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
+
+                max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
+
+                # concatenate the numpy array
+                start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len)
+                end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len)
+
+                # delete the list of numpy arrays
+                del all_start_logits
+                del all_end_logits
+
+                outputs_numpy = (start_logits_concat, end_logits_concat)
+                prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
+                eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
+                logger.info(f"Evaluation metrics: {eval_metric}")
+                model.train()
+
+
+
+
 
             if completed_steps >= args.max_train_steps:
                 break
@@ -846,7 +909,6 @@ def main():
         unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
         if accelerator.is_main_process:
             tokenizer.save_pretrained(args.output_dir)
-
 
 
 if __name__ == "__main__":
