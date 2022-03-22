@@ -225,7 +225,7 @@ def main():
     pretrained_params = []
     finetune_params = []
     for (name, p) in model.named_parameters():
-        if "ner_classifier" not in name:
+        if "xlm" not in name:
             pretrained_params.append(p)
         else:
             finetune_params.append(p)
