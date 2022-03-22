@@ -67,42 +67,6 @@ class ReverseSqrtScheduler:
             param_group['lr'] = lr[i]
 
 def parse_args():
-    """
-        --dataset_name
-        --dataset_config_name :config?
-        --train_file
-        --preprocessing_num_workers : DATASET load workers?
-        --do_predict
-        --validation_file
-        --test_file
-        --max_seq_length
-        --pad_to_max_length
-        --model_name_or_path
-        --config_name : config could be a file?
-        --tokenizer_name
-        --per_device_train_batch_size
-        --per_device_eval_batch_size
-        --learning_rate
-        --weight_decay
-        --num_train_epochs
-        --max_train_steps
-        --gradient_accumulation_steps
-        --lr_scheduler_type
-        --num_warmup_steps
-        --output_dir
-        --seed
-        --doc_stride
-        --n_best_size
-        --null_score_diff_threshold
-        --version_2_with_negative
-        --max_answer_length
-        --max_train_samples
-        --max_eval_samples
-        --max_predict_samples
-        --model_type
-
-
-    """
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a Question Answering task")
     parser.add_argument('--ratio', required=True, type=int)
     parser.add_argument('--loss_interval', required=True, type=int)

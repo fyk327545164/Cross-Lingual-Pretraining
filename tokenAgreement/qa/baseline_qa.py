@@ -81,6 +81,8 @@ def parse_args():
 
     """
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a Question Answering task")
+    parser.add_argument('--loss_interval', required=True, type=int)
+    parser.add_argument('--eval_interval', required=True, type=int)
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -673,6 +675,50 @@ def main():
         num_training_steps=args.max_train_steps,
     )
 
+
+    def run_eval():
+        # Evaluation
+        logger.info("\n***** Running Evaluation *****")
+        logger.info(f"  Num examples = {len(eval_dataset)}")
+        logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
+
+        model.eval()
+        all_start_logits = []
+        all_end_logits = []
+        for step, batch in enumerate(eval_dataloader):
+            with torch.no_grad():
+                outputs = model(**batch)
+                start_logits = outputs.start_logits
+                end_logits = outputs.end_logits
+
+                if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
+                    start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
+                    end_logits = accelerator.pad_across_processes(end_logits, dim=1, pad_index=-100)
+
+                all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
+                all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
+
+        max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
+
+        # concatenate the numpy array
+        start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len)
+        end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len)
+
+        # delete the list of numpy arrays
+        del all_start_logits
+        del all_end_logits
+
+        outputs_numpy = (start_logits_concat, end_logits_concat)
+        prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
+        eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
+        logger.info(f"Evaluation metrics: {eval_metric}")
+        with open(args.output_dir + "/out_base", "a") as log_file_fr:
+            log_file_fr.write(f"eval:-------")
+            log_file_fr.write(f"\n Evaluation metrics: {eval_metric}")
+            log_file_fr.write(f"train:-----")
+
+        model.train()
+
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -688,12 +734,25 @@ def main():
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
 
+
+    with open(args.output_dir + "/out_base","w") as log_file_fr:
+        log_file_fr.write("start\n")
+
+    epoch_num = 0
+
     for epoch in range(args.num_train_epochs):
         model.train()
+        epoch_loss = 0
+        epoch_step = 0
+
         for step, batch in enumerate(train_dataloader):
             outputs = model(**batch)
             loss = outputs.loss
             loss = loss / args.gradient_accumulation_steps
+
+            epoch_loss += loss.item()
+            epoch_step += 1
+
             accelerator.backward(loss)
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optimizer.step()
@@ -702,8 +761,22 @@ def main():
                 progress_bar.update(1)
                 completed_steps += 1
 
+
+
+            if completed_steps % args.loss_interval == 0:
+                with open(args.output_dir + "/out_base", "a") as log_file_fr:
+                    log_file_fr.write(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
+                print(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
+            if completed_steps % args.eval_interval == 0:
+                run_eval()
+
             if completed_steps >= args.max_train_steps:
                 break
+        with open(args.output_dir + "/out_base", "a") as log_file_fr:
+            log_file_fr.write(f"epoch {epoch} end \n")
+        print(f"epoch {epoch} end \n")
+
+
 
     # Evaluation
     logger.info("\n***** Running Evaluation *****")
