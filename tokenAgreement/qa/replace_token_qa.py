@@ -781,6 +781,11 @@ def main():
         prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
         eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
         logger.info(f"Evaluation metrics: {eval_metric}")
+        with open(args.output_dir + "/out", "a") as log_file_fr:
+            log_file_fr.write(f"eval:-------")
+            log_file_fr.write(f"\n Evaluation metrics: {eval_metric}")
+            log_file_fr.write(f"train:-----")
+
         model.train()
 
     # Optimizer
@@ -837,6 +842,10 @@ def main():
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
 
+
+    with open(args.output_dir + "/out","w") as log_file_fr:
+        log_file_fr.write("start\n")
+
     for epoch in range(args.num_train_epochs):
         model.train()
         epoch_loss = 0
@@ -859,6 +868,8 @@ def main():
                 completed_steps += 1
 
             if completed_steps % args.loss_interval == 0:
+                with open(args.output_dir + "/out", "a") as log_file_fr:
+                    log_file_fr.write(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
                 print(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
             if completed_steps % args.eval_interval == 0:
                 run_eval()
