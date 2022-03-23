@@ -296,6 +296,7 @@ def main():
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
+        valid_datasets = load_dataset("xquad", "xquad.ru")
     else:
         data_files = {}
         if args.train_file is not None:
@@ -508,7 +509,8 @@ def main():
 
     if "validation" not in raw_datasets:
         raise ValueError("--do_eval requires a validation dataset")
-    eval_examples = raw_datasets["validation"]
+    # eval_examples = raw_datasets["validation"]
+    eval_examples = valid_datasets["validation"]
     if args.max_eval_samples is not None:
         # We will select sample from whole data
         eval_examples = eval_examples.select(range(args.max_eval_samples))
