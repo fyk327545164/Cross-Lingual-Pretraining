@@ -345,6 +345,7 @@ def main():
     # Preprocessing the datasets.
     # Preprocessing is slight different for training and evaluation.
     column_names = raw_datasets["train"].column_names
+    valid_column_names = valid_datasets["validation"].column_names
 
     question_column_name = "question" if "question" in column_names else column_names[0]
     context_column_name = "context" if "context" in column_names else column_names[1]
@@ -520,7 +521,7 @@ def main():
             prepare_validation_features,
             batched=True,
             num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
+            remove_columns=valid_column_names,
             load_from_cache_file=not args.overwrite_cache,
             desc="Running tokenizer on validation dataset",
         )
@@ -739,8 +740,6 @@ def main():
 
     with open(args.output_dir + "/out_base","w") as log_file_fr:
         log_file_fr.write("start\n")
-
-    epoch_num = 0
 
     for epoch in range(args.num_train_epochs):
         model.train()
