@@ -2,6 +2,7 @@ import argparse
 import logging
 import math
 import os
+import pickle
 import random
 from pathlib import Path
 
@@ -44,45 +45,13 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
 def parse_args():
-    """
-        --dataset_name
-        --dataset_config_name :config?
-        --train_file
-        --preprocessing_num_workers : DATASET load workers?
-        --do_predict
-        --validation_file
-        --test_file
-        --max_seq_length
-        --pad_to_max_length
-        --model_name_or_path
-        --config_name : config could be a file?
-        --tokenizer_name
-        --per_device_train_batch_size
-        --per_device_eval_batch_size
-        --learning_rate
-        --weight_decay
-        --num_train_epochs
-        --max_train_steps
-        --gradient_accumulation_steps
-        --lr_scheduler_type
-        --num_warmup_steps
-        --output_dir
-        --seed
-        --doc_stride
-        --n_best_size
-        --null_score_diff_threshold
-        --version_2_with_negative
-        --max_answer_length
-        --max_train_samples
-        --max_eval_samples
-        --max_predict_samples
-        --model_type
-
-
-    """
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a Question Answering task")
+    parser.add_argument('--ratio', required=True, type=int)
+    parser.add_argument("--replace_table_file", type=str, default=None)
     parser.add_argument('--loss_interval', required=True, type=int)
     parser.add_argument('--eval_interval', required=True, type=int)
+    parser.add_argument("--output_log_file", type=str, required=True)
+    parser.add_argument("--eval_lang",type=str, required=True)
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -264,8 +233,19 @@ def parse_args():
             assert extension in ["csv", "json"], "`test_file` should be a csv or a json file."
     return args
 
+
 def main():
     args = parse_args()
+
+    if args.replace_table_file is not None:
+        with open(args.replace_table_file, "rb") as fr:
+            aligned_tokens_table = pickle.load(fr)
+    else:
+        aligned_tokens_table = {}
+
+
+    random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10 - args.ratio)]
+    random.shuffle(random_index)
 
     accelerator = Accelerator()
     logging.basicConfig(
@@ -296,7 +276,7 @@ def main():
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
-        valid_datasets = load_dataset("xquad", "xquad.ru")
+        valid_datasets = load_dataset("xquad", f"xquad.{args.eval_lang}")
     else:
         data_files = {}
         if args.train_file is not None:
@@ -368,6 +348,67 @@ def main():
         # truncation of the context fail (the tokenized question will take a lots of space). So we remove that
         # left whitespace
         examples[question_column_name] = [q.lstrip() for q in examples[question_column_name]]
+
+        for idx in range(len(examples[context_column_name])):
+            context = examples[context_column_name][idx]
+            # question = examples[question_column_name][idx]
+            # the_answer = examples[answer_column_name][idx]
+            # print(f"before change context: {context}\n question:{question} \n answer: {the_answer}")
+
+            start = 0
+            end = 0
+            context_tokens = []
+            context_tokens_idx = []
+            is_space = context[start] == ' '
+            while start < len(context):
+                new_is_space = context[start] == ' '
+                if new_is_space == is_space:
+                    start += 1
+                else:
+                    sub_string = context[end:start]
+                    if len(sub_string.lstrip()) > 0:
+                        context_tokens.append(sub_string)
+                        context_tokens_idx.append(end)
+                    is_space = new_is_space
+                    end = start
+                    start += 1
+            context_tokens.append(context[end:start])
+            context_tokens_idx.append(end)
+
+            answers_text = examples[answer_column_name][idx]["text"][0]
+            answers_start = examples[answer_column_name][idx]["answer_start"][0]
+            answer_range = (answers_start, answers_start + len(answers_text))
+
+            question_tokens = examples[question_column_name][idx].split()
+            for token_idx in range(len(question_tokens)):
+                cur_token = question_tokens[token_idx].lower()
+                if cur_token in aligned_tokens_table:
+                    if random.choice(random_index) == 0:
+                        question_tokens[token_idx] = random.choice(aligned_tokens_table[cur_token])
+            examples[question_column_name][idx] = " ".join(question_tokens)
+
+            orginal_context = examples[context_column_name][idx][:]
+
+            for token_idx in range(len(context_tokens)):
+                cur_token, cur_token_idx = context_tokens[token_idx], context_tokens_idx[token_idx]
+                cur_token = cur_token.lower()
+                if not (answer_range[0] <= cur_token_idx <= answer_range[1]) and cur_token in aligned_tokens_table:
+                    if random.choice(random_index) == 0:
+                        context_tokens[token_idx] = random.choice(aligned_tokens_table[cur_token])
+            examples[context_column_name][idx] = " ".join(context_tokens)
+
+            new_answer_start = []
+
+            if answers_text in examples[context_column_name][idx]:
+                new_answer_start.append(examples[context_column_name][idx].index(answers_text))
+            else:
+                print(f"idx: {idx}, context: {examples[context_column_name][idx]}")
+                print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}")
+                print(f"idx: {idx}, answer: {orginal_context}")
+
+            examples[answer_column_name][idx]["answer_start"] = new_answer_start
+            print(
+                f"\n after change context: {examples[context_column_name][idx]}\n question:{examples[question_column_name][idx]} \n answer: {examples[answer_column_name][idx]}")
 
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
@@ -633,7 +674,7 @@ def main():
             cols = output_logit.shape[1]
 
             if step + batch_size < len(dataset):
-                logits_concat[step : step + batch_size, :cols] = output_logit
+                logits_concat[step: step + batch_size, :cols] = output_logit
             else:
                 logits_concat[step:, :cols] = output_logit[: len(dataset) - step]
 
@@ -678,7 +719,6 @@ def main():
         num_training_steps=args.max_train_steps,
     )
 
-
     def run_eval():
         # Evaluation
         logger.info("\n***** Running Evaluation *****")
@@ -715,7 +755,7 @@ def main():
         prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
         eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
         logger.info(f"Evaluation metrics: {eval_metric}")
-        with open(args.output_dir + "/out_base", "a") as log_file_fr:
+        with open(args.output_log_file, "a") as log_file_fr:
             log_file_fr.write(f"eval:-------")
             log_file_fr.write(f"\n Evaluation metrics: {eval_metric}")
             log_file_fr.write(f"train:-----")
@@ -737,8 +777,8 @@ def main():
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
 
-
-    with open(args.output_dir + "/out_base","w") as log_file_fr:
+    os.makedirs(os.path.dirname(args.output_log_file), exist_ok=True)
+    with open(args.output_log_file, "w") as log_file_fr:
         log_file_fr.write("start\n")
 
     for epoch in range(args.num_train_epochs):
@@ -762,10 +802,8 @@ def main():
                 progress_bar.update(1)
                 completed_steps += 1
 
-
-
             if completed_steps % args.loss_interval == 0:
-                with open(args.output_dir + "/out_base", "a") as log_file_fr:
+                with open(args.output_log_file, "a") as log_file_fr:
                     log_file_fr.write(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
                 print(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
             if completed_steps % args.eval_interval == 0:
@@ -773,11 +811,9 @@ def main():
 
             if completed_steps >= args.max_train_steps:
                 break
-        with open(args.output_dir + "/out_base", "a") as log_file_fr:
+        with open(args.output_log_file, "a") as log_file_fr:
             log_file_fr.write(f"epoch {epoch} end \n")
         print(f"epoch {epoch} end \n")
-
-
 
     # Evaluation
     logger.info("\n***** Running Evaluation *****")
@@ -855,7 +891,6 @@ def main():
         unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
         if accelerator.is_main_process:
             tokenizer.save_pretrained(args.output_dir)
-
 
 
 if __name__ == "__main__":
