@@ -4,7 +4,6 @@ import math
 import os
 import pickle
 import random
-from pathlib import Path
 
 import datasets
 import numpy as np
@@ -15,7 +14,6 @@ from tqdm.auto import tqdm
 
 import transformers
 from accelerate import Accelerator
-from huggingface_hub import Repository
 from transformers import (
     CONFIG_MAPPING,
     MODEL_MAPPING,
@@ -30,12 +28,10 @@ from transformers import (
     get_scheduler,
     set_seed,
 )
-from transformers.file_utils import get_full_repo_name
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 from utils_qa import postprocess_qa_predictions
 
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.18.0.dev0")
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/question-answering/requirements.txt")
 logger = logging.getLogger(__name__)
@@ -43,46 +39,39 @@ logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
+class ReverseSqrtScheduler:
+    def __init__(self, optimizer, lr, n_warmup_steps):
+        self._optimizer = optimizer
+        self.lr_mul = lr
+        self.n_warmup_steps = n_warmup_steps
+        self.n_steps = 0
+
+        self.decay_factor = [_lr * n_warmup_steps ** 0.5 for _lr in lr]
+        self.lr_step = [(_lr - 0) / n_warmup_steps for _lr in lr]
+
+    def step_and_update_lr(self):
+        self._update_learning_rate()
+        self._optimizer.step()
+
+    def zero_grad(self):
+        self._optimizer.zero_grad()
+
+    def _update_learning_rate(self):
+        self.n_steps += 1
+        if self.n_steps < self.n_warmup_steps:
+            lr = [self.n_steps * _lr for _lr in self.lr_step]
+        else:
+            lr = [_decay_factor * self.n_steps ** -0.5 for _decay_factor in self.decay_factor]
+        for i, param_group in enumerate(self._optimizer.param_groups):
+
+            param_group['lr'] = lr[i]
 
 def parse_args():
-    """
-        --dataset_name
-        --dataset_config_name :config?
-        --train_file
-        --preprocessing_num_workers : DATASET load workers?
-        --do_predict
-        --validation_file
-        --test_file
-        --max_seq_length
-        --pad_to_max_length
-        --model_name_or_path
-        --config_name : config could be a file?
-        --tokenizer_name
-        --per_device_train_batch_size
-        --per_device_eval_batch_size
-        --learning_rate
-        --weight_decay
-        --num_train_epochs
-        --max_train_steps
-        --gradient_accumulation_steps
-        --lr_scheduler_type
-        --num_warmup_steps
-        --output_dir
-        --seed
-        --doc_stride
-        --n_best_size
-        --null_score_diff_threshold
-        --version_2_with_negative
-        --max_answer_length
-        --max_train_samples
-        --max_eval_samples
-        --max_predict_samples
-        --model_type
-
-
-    """
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a Question Answering task")
     parser.add_argument('--ratio', required=True, type=int)
+    parser.add_argument('--loss_interval', required=True, type=int)
+    parser.add_argument('--eval_interval', required=True, type=int)
+    parser.add_argument("--replace_table_file", type=str, default=None)
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -276,17 +265,18 @@ def parse_args():
             assert extension in ["csv", "json"], "`test_file` should be a csv or a json file."
     return args
 
-
 def main():
     args = parse_args()
+    # read in token replace tabel
+    if args.replace_table_file is not None:
+        with open(args.replace_table_file, "rb") as fr:
+            aligned_tokens_table = pickle.load(fr)
+    else:
+        aligned_tokens_table = {}
 
-    with open("../../data/en-ru/en-ru_bert-base-multilingual-cased_table", "rb") as fr:
-        aligned_tokens_table = pickle.load(fr)
-
+    # generate rate of replace
     random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10 - args.ratio)]
     random.shuffle(random_index)
-    print(random_index)
-
     accelerator = Accelerator()
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -313,12 +303,12 @@ def main():
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
+    # load in train
     if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
-    if args.validation_datasets is not None:
-        validation_rawdata = load_dataset(args.validation_datasets, args.validation_lang)
-
+    # load in test
+        if args.validation_datasets is not None:
+            validation_rawdata = load_dataset(args.validation_datasets, args.validation_lang)
     else:
         data_files = {}
         if args.train_file is not None:
@@ -392,6 +382,11 @@ def main():
 
         for idx in range(len(examples[context_column_name])):
             context = examples[context_column_name][idx]
+            question = examples[question_column_name][idx]
+            the_answer = examples[answer_column_name][idx]
+            print(f"before change context: {context}\n question:{question} \n answer: {the_answer}")
+
+
 
             start = 0
             end = 0
@@ -436,14 +431,16 @@ def main():
             examples[context_column_name][idx] = " ".join(context_tokens)
 
             new_answer_start = []
-            for answer in answers_text:
-                if answer in examples[context_column_name][idx]:
-                    new_answer_start.append(examples[context_column_name][idx].index(answer))
-                else:
-                    print(f"idx: {idx}, context: {examples[context_column_name][idx]}")
-                    print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}")
-                    print(f"idx: {idx}, answer: {orginal_context}")
+
+            if answers_text in examples[context_column_name][idx]:
+                new_answer_start.append(examples[context_column_name][idx].index(answers_text))
+            else:
+                print(f"idx: {idx}, context: {examples[context_column_name][idx]}")
+                print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}")
+                print(f"idx: {idx}, answer: {orginal_context}")
+
             examples[answer_column_name][idx]["answer_start"] = new_answer_start
+            print(f"\n after change context: {examples[context_column_name][idx]}\n question:{examples[question_column_name][idx]} \n answer: {examples[answer_column_name][idx]}")
 
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
@@ -719,6 +716,49 @@ def main():
 
         return logits_concat
 
+    def run_eval():
+        # Evaluation
+        logger.info("\n***** Running Evaluation *****")
+        logger.info(f"  Num examples = {len(eval_dataset)}")
+        logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
+
+        model.eval()
+        all_start_logits = []
+        all_end_logits = []
+        for step, batch in enumerate(eval_dataloader):
+            with torch.no_grad():
+                outputs = model(**batch)
+                start_logits = outputs.start_logits
+                end_logits = outputs.end_logits
+
+                if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
+                    start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
+                    end_logits = accelerator.pad_across_processes(end_logits, dim=1, pad_index=-100)
+
+                all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
+                all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
+
+        max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
+
+        # concatenate the numpy array
+        start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len)
+        end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len)
+
+        # delete the list of numpy arrays
+        del all_start_logits
+        del all_end_logits
+
+        outputs_numpy = (start_logits_concat, end_logits_concat)
+        prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
+        eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
+        logger.info(f"Evaluation metrics: {eval_metric}")
+        with open(args.output_dir + "/out", "a") as log_file_fr:
+            log_file_fr.write(f"eval:-------")
+            log_file_fr.write(f"\n Evaluation metrics: {eval_metric}")
+            log_file_fr.write(f"train:-----")
+
+        model.train()
+
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "LayerNorm.weight"]
@@ -733,6 +773,7 @@ def main():
         },
     ]
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+
 
     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
@@ -749,12 +790,13 @@ def main():
     else:
         args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.max_train_steps,
-    )
+    lr_scheduler = ReverseSqrtScheduler(optimizer, [args.learning_rate,args.learning_rate], args.num_warmup_steps)
+    # lr_scheduler = get_scheduler(
+    #     name=args.lr_scheduler_type,
+    #     optimizer=optimizer,
+    #     num_warmup_steps=args.num_warmup_steps,
+    #     num_training_steps=args.max_train_steps,
+    # )
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -771,6 +813,10 @@ def main():
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
 
+
+    with open(args.output_dir + "/out","w") as log_file_fr:
+        log_file_fr.write("start\n")
+
     for epoch in range(args.num_train_epochs):
         model.train()
         epoch_loss = 0
@@ -786,122 +832,22 @@ def main():
             accelerator.backward(loss)
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+                lr_scheduler.step_and_update_lr()
+                lr_scheduler.zero_grad()
+
                 progress_bar.update(1)
                 completed_steps += 1
 
-            if completed_steps % 1000 == 0:
-                print(f"\n step :{completed_steps} loss: {epoch_loss/epoch_step}")
-            if completed_steps % 10000 == 0:
-                model.eval()
-                all_start_logits = []
-                all_end_logits = []
-                for step, batch in enumerate(eval_dataloader):
-                    with torch.no_grad():
-                        outputs = model(**batch)
-                        start_logits = outputs.start_logits
-                        end_logits = outputs.end_logits
-
-                        if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
-                            start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
-                            end_logits = accelerator.pad_across_processes(end_logits, dim=1, pad_index=-100)
-
-                        all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
-                        all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
-
-                max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
-
-                # concatenate the numpy array
-                start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len)
-                end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len)
-
-                # delete the list of numpy arrays
-                del all_start_logits
-                del all_end_logits
-
-                outputs_numpy = (start_logits_concat, end_logits_concat)
-                prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
-                eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
-                logger.info(f"Evaluation metrics: {eval_metric}")
-                model.train()
-
-
-
-
-
+            if completed_steps % args.loss_interval == 0:
+                with open(args.output_dir + "/out", "a") as log_file_fr:
+                    log_file_fr.write(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
+                print(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
+            if completed_steps % args.eval_interval == 0:
+                run_eval()
             if completed_steps >= args.max_train_steps:
                 break
+        run_eval()
 
-    # Evaluation
-    logger.info("\n***** Running Evaluation *****")
-    logger.info(f"  Num examples = {len(eval_dataset)}")
-    logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
-
-    all_start_logits = []
-    all_end_logits = []
-    for step, batch in enumerate(eval_dataloader):
-        with torch.no_grad():
-            outputs = model(**batch)
-            start_logits = outputs.start_logits
-            end_logits = outputs.end_logits
-
-            if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
-                start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
-                end_logits = accelerator.pad_across_processes(end_logits, dim=1, pad_index=-100)
-
-            all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
-            all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
-
-    max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
-
-    # concatenate the numpy array
-    start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len)
-    end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len)
-
-    # delete the list of numpy arrays
-    del all_start_logits
-    del all_end_logits
-
-    outputs_numpy = (start_logits_concat, end_logits_concat)
-    prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
-    eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
-    logger.info(f"Evaluation metrics: {eval_metric}")
-
-    # Prediction
-    if args.do_predict:
-        logger.info("***** Running Prediction *****")
-        logger.info(f"  Num examples = {len(predict_dataset)}")
-        logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
-
-        all_start_logits = []
-        all_end_logits = []
-        for step, batch in enumerate(predict_dataloader):
-            with torch.no_grad():
-                outputs = model(**batch)
-                start_logits = outputs.start_logits
-                end_logits = outputs.end_logits
-
-                if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
-                    start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
-                    end_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
-
-                all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
-                all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
-
-        max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
-        # concatenate the numpy array
-        start_logits_concat = create_and_fill_np_array(all_start_logits, predict_dataset, max_len)
-        end_logits_concat = create_and_fill_np_array(all_end_logits, predict_dataset, max_len)
-
-        # delete the list of numpy arrays
-        del all_start_logits
-        del all_end_logits
-
-        outputs_numpy = (start_logits_concat, end_logits_concat)
-        prediction = post_processing_function(predict_examples, predict_dataset, outputs_numpy)
-        predict_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
-        logger.info(f"Predict metrics: {predict_metric}")
 
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
