@@ -376,6 +376,8 @@ def main():
             context_tokens_idx.append(end)
 
             answers_text = examples[answer_column_name][idx]["text"][0]
+            answers_text_token = answers_text.split()
+            answers_text = " ".join(answers_text_token)
             answers_start = examples[answer_column_name][idx]["answer_start"][0]
             answer_range = (answers_start, answers_start + len(answers_text))
 
@@ -402,9 +404,9 @@ def main():
             if answers_text in examples[context_column_name][idx]:
                 new_answer_start.append(examples[context_column_name][idx].index(answers_text))
             else:
-                print(f"idx: {idx}, context: {examples[context_column_name][idx]}")
-                print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}")
-                print(f"idx: {idx}, answer: {orginal_context}")
+                print(f"idx: {idx}, context: {examples[context_column_name][idx]}\n")
+                print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}\n")
+                print(f"idx: {idx}, orignal: {orginal_context}\n")
 
             examples[answer_column_name][idx]["answer_start"] = new_answer_start
             # print(
