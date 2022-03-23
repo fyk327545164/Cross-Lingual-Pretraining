@@ -24,12 +24,11 @@ class Aligner:
 
     def create_parallel_data(self):
 
-        ds = load_dataset(lg_corpus[self.tgt_lang], "{}-en".format(self.tgt_lang),
-                          cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")
+        ds = load_dataset(lg_corpus[self.tgt_lang], "{}-en".format(self.tgt_lang))
         with open(self.parallel_data_file_name, "w") as fw:
             for lg_pair in tqdm(ds["train"]["translation"]):
-                fw.write(" ".join(self.tokenizer.tokenize(lg_pair["en"])) + " ||| " + " ".join(
-                    self.tokenizer.tokenize(lg_pair[self.tgt_lang])) + " \n")
+                fw.write(" ".join(self.tokenizer.tokenize(lg_pair["en"])).replace(" ##", "") + " ||| " + " ".join(
+                    self.tokenizer.tokenize(lg_pair[self.tgt_lang])).replace(" ##", "") + " \n")
 
     # def create_parallel_data(self):
     #     filename_src = f"{self.parallel_data_folder}News-Commentary.{self.lang_pair}.{self.src_lang}"
@@ -103,7 +102,7 @@ class Aligner:
             pickle.dump(aligned_dict, fw)
 
 
-for lg in ["ru", "hi", "zh", "tr", "de"]:
+for lg in ["ru", "hi", "tr", "de"]:
     aligner = Aligner("en", lg)
     aligner.create_parallel_data()
     aligner.run_fast_align()
