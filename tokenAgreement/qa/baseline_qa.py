@@ -407,8 +407,8 @@ def main():
                 print(f"idx: {idx}, answer: {orginal_context}")
 
             examples[answer_column_name][idx]["answer_start"] = new_answer_start
-            print(
-                f"\n after change context: {examples[context_column_name][idx]}\n question:{examples[question_column_name][idx]} \n answer: {examples[answer_column_name][idx]}")
+            # print(
+            #     f"\n after change context: {examples[context_column_name][idx]}\n question:{examples[question_column_name][idx]} \n answer: {examples[answer_column_name][idx]}")
 
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
