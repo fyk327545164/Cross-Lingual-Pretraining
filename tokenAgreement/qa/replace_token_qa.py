@@ -382,6 +382,11 @@ def main():
 
         for idx in range(len(examples[context_column_name])):
             context = examples[context_column_name][idx]
+            question = examples[question_column_name][idx]
+            the_answer = examples[answer_column_name][idx]
+            print(f"before change context: {context}\n question:{question} \n answer: {the_answer}")
+
+
 
             start = 0
             end = 0
@@ -426,14 +431,16 @@ def main():
             examples[context_column_name][idx] = " ".join(context_tokens)
 
             new_answer_start = []
-            for answer in answers_text:
-                if answer in examples[context_column_name][idx]:
-                    new_answer_start.append(examples[context_column_name][idx].index(answer))
-                else:
-                    print(f"idx: {idx}, context: {examples[context_column_name][idx]}")
-                    print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}")
-                    print(f"idx: {idx}, answer: {orginal_context}")
+
+            if answers_text in examples[context_column_name][idx]:
+                new_answer_start.append(examples[context_column_name][idx].index(answers_text))
+            else:
+                print(f"idx: {idx}, context: {examples[context_column_name][idx]}")
+                print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}")
+                print(f"idx: {idx}, answer: {orginal_context}")
+
             examples[answer_column_name][idx]["answer_start"] = new_answer_start
+            print(f"\n after change context: {examples[context_column_name][idx]}\n question:{examples[question_column_name][idx]} \n answer: {examples[answer_column_name][idx]}")
 
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
