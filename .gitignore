@@ -4,5 +4,7 @@ data/
 tokenAgreement/qa/tmp
 tokenAgreement/qa/data
 tokenAgreement/qa/__pycache__/
+fast_align
+
 
 

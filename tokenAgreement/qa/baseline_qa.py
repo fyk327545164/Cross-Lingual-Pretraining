@@ -44,14 +44,42 @@ MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
+class ReverseSqrtScheduler:
+    def __init__(self, optimizer, lr, n_warmup_steps):
+        self._optimizer = optimizer
+        self.lr_mul = lr
+        self.n_warmup_steps = n_warmup_steps
+        self.n_steps = 0
+
+        self.decay_factor = [_lr * n_warmup_steps ** 0.5 for _lr in lr]
+        self.lr_step = [(_lr - 0) / n_warmup_steps for _lr in lr]
+
+    def step_and_update_lr(self):
+        self._update_learning_rate()
+        self._optimizer.step()
+
+    def zero_grad(self):
+        self._optimizer.zero_grad()
+
+    def _update_learning_rate(self):
+        self.n_steps += 1
+        if self.n_steps < self.n_warmup_steps:
+            lr = [self.n_steps * _lr for _lr in self.lr_step]
+        else:
+            lr = [_decay_factor * self.n_steps ** -0.5 for _decay_factor in self.decay_factor]
+
+        for i, param_group in enumerate(self._optimizer.param_groups):
+            param_group['lr'] = lr[i]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a Question Answering task")
     parser.add_argument('--ratio', required=True, type=int)
     parser.add_argument("--replace_table_file", type=str, default=None)
     parser.add_argument('--loss_interval', required=True, type=int)
-    parser.add_argument('--eval_interval', required=True, type=int)
+    parser.add_argument('--eval_interval', default=-1, type=int)
     parser.add_argument("--output_log_file", type=str, required=True)
-    parser.add_argument("--eval_lang",type=str, required=True)
+    parser.add_argument("--eval_lang", type=str, required=True)
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -118,7 +146,13 @@ def parse_args():
         help="Batch size (per device) for the evaluation dataloader.",
     )
     parser.add_argument(
-        "--learning_rate",
+        "--learning_rate_pre_train",
+        type=float,
+        default=5e-5,
+        help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--learning_rate_fine_tune",
         type=float,
         default=5e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
@@ -242,7 +276,6 @@ def main():
             aligned_tokens_table = pickle.load(fr)
     else:
         aligned_tokens_table = {}
-
 
     random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10 - args.ratio)]
     random.shuffle(random_index)
@@ -685,19 +718,23 @@ def main():
         return logits_concat
 
     # Optimizer
+    pretrained_params = []
+    finetune_params = []
+
+    for (name, p) in model.named_parameters():
+        if "bert" in name:
+            pretrained_params.append(p)
+        else:
+            finetune_params.append(p)
+    # print(len(pretrained_params))
+    # print(len(finetune_params))
+    optimizer = AdamW(
+        [{'params': pretrained_params, 'lr': args.learning_rate_pre_train},
+         {'params': finetune_params, 'lr': args.learning_rate_fine_tune}])
+    scheduler = ReverseSqrtScheduler(optimizer, [args.learning_rate_pre_train, args.learning_rate_fine_tune],
+                                     args.num_warmup_steps)
+
     # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "LayerNorm.weight"]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": args.weight_decay,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
-    ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
@@ -713,13 +750,6 @@ def main():
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     else:
         args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
-
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.max_train_steps,
-    )
 
     def run_eval():
         # Evaluation
@@ -795,12 +825,11 @@ def main():
 
             epoch_loss += loss.item()
             epoch_step += 1
-
             accelerator.backward(loss)
+
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+                scheduler.step_and_update_lr()
+                scheduler.zero_grad()
                 progress_bar.update(1)
                 completed_steps += 1
 
@@ -808,11 +837,12 @@ def main():
                 with open(args.output_log_file, "a") as log_file_fr:
                     log_file_fr.write(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
                 print(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
-            if completed_steps % args.eval_interval == 0:
+            if args.eval_interval != -1 and completed_steps % args.eval_interval == 0:
                 run_eval()
 
             if completed_steps >= args.max_train_steps:
                 break
+        run_eval()
         with open(args.output_log_file, "a") as log_file_fr:
             log_file_fr.write(f"epoch {epoch} end \n")
         print(f"epoch {epoch} end \n")
