@@ -14,7 +14,8 @@ MAX_LENGTH = 128
 MODEL_NAME = "bert-base-multilingual-cased"
 LANGUAGE_IDS = ["Hindi", "German", "Russian", "Turkish"]
 
-aligned_tokens = get_aligned_tokens(LANGUAGE_IDS)
+LANGUAGE_IDS_for_aligned_table = ["hi", "de", "ru", "tr"]
+aligned_tokens = get_aligned_tokens(LANGUAGE_IDS_for_aligned_table)
 
 print(args.ratio, args.mode)
 

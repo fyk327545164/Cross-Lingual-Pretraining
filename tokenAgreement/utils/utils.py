@@ -36,7 +36,8 @@ def get_aligned_tokens(langauge_ids):
             for key, val in tqdm(_aligned_tokens.items()):
                 if key not in aligned_tokens:
                     aligned_tokens[key] = []
-                aligned_tokens[key] += val[:]
+                for _ in range(20):
+                    aligned_tokens[key].append(random.choice(val[:]))
     return aligned_tokens
 
 
@@ -88,10 +89,6 @@ import json
 import logging
 import os
 from typing import Optional, Tuple
-
-import numpy as np
-from tqdm.auto import tqdm
-
 
 logger = logging.getLogger(__name__)
 
