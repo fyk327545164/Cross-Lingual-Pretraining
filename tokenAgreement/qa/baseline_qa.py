@@ -384,10 +384,6 @@ def main():
 
         for idx in range(len(examples[context_column_name])):
             context = examples[context_column_name][idx]
-            # question = examples[question_column_name][idx]
-            # the_answer = examples[answer_column_name][idx]
-            # print(f"before change context: {context}\n question:{question} \n answer: {the_answer}")
-
             start = 0
             end = 0
             context_tokens = []

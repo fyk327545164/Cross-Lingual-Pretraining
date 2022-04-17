@@ -25,11 +25,13 @@ random.seed(1234)
 parser = argparse.ArgumentParser()
 parser.add_argument('--ratio', required=True, type=int)
 parser.add_argument('--lg', required=True, type=str)
+parser.add_argument('--mode', required=True, type=str)
+
 args = parser.parse_args()
 
 metric = load_metric("seqeval")
 
-global_label_list = ['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
+global_label_list = ["S" + str(n) for n in range(17)]
 
 LR_PRETRAIN = 0.00001
 LR_FINETUNE = 0.00009
@@ -38,28 +40,14 @@ WARMUP_STEPS = 100
 MODEL_NAME = "bert-base-multilingual-cased"
 
 aligned_tokens = {}
-for _lg in ["hi"]:  # "de","ru","tr"]:
+for _lg in ["hi", "de", "ru", "tr"]:
     with open("data/aligned-tokens-en-{}".format(_lg), "rb") as fr:
         _aligned_tokens = pickle.load(fr)
         for key, val in tqdm(_aligned_tokens.items()):
             if key not in aligned_tokens:
                 aligned_tokens[key] = []
             aligned_tokens[key] += val[:]
-            # ndom.shuffle(aligned_tokens[key])
-"""
-aligned_tokens = {}
-for key, val in _aligned_tokens.items():
-    aligned_tokens[key] = []
-    for _word, _count in Counter(val).most_common():
-        if len(aligned_tokens[key]) == 0:
-            aligned_tokens[key].append(_word)
-            #reak
-            _all_count = _count
-            continue
-        if _count/_all_count < 0.88:
-            break
-        aligned_tokens[key].append(_word)  
-"""
+
 random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(100 - args.ratio)]
 random.shuffle(random_index)
 print(random_index)
@@ -84,10 +72,8 @@ class CrossLingualModel(nn.Module):
         input_ids = input_ids.to(self.xlm.device)
         attention_mask = attention_mask.to(self.xlm.device)
         if eng_input_ids is not None:
-            eng_input_ids = eng_input_ids.to(self.xlm.device)
-            eng_attention_mask = eng_attention_mask.to(self.xlm.device)
-
-        # rint(input_ids.size())
+            eng_input_ids = eng_input_ids.to(self.xlm.device) if args.mode == "align" else None
+            eng_attention_mask = eng_attention_mask.to(self.xlm.device) if args.mode == "align" else None
 
         outputs = self.xlm(input_ids, attention_mask, eng_input_ids=eng_input_ids,
                            eng_attention_mask=eng_attention_mask)
@@ -95,14 +81,10 @@ class CrossLingualModel(nn.Module):
         sequence_output = self.dropout(outputs[0])
         logits = self.ner_classifier(sequence_output)
 
-        # if eng_input_ids is not None:
-        #     eng_sequence_output = self.dropout(outputs[0][1])
-        #     eng_logits = self.ner_classifier(eng_sequence_output)
-
         loss = None
         if ner_labels is not None:
             ner_labels = ner_labels.to(self.xlm.device)
-            if eng_labels is not None:
+            if eng_labels is not None and args.mode == "align":
                 eng_labels = eng_labels.to(self.xlm.device)
                 ner_labels = torch.cat((ner_labels, eng_labels), 1)
 
@@ -112,18 +94,18 @@ class CrossLingualModel(nn.Module):
         return loss, logits
 
 
-LANGUAGE_IDS = ["hi", "de", "ru", "tr"]  # [args.lg]  # , "es", "nl", "pl", "ru", "it", "fr", "pt"]
+LANGUAGE_IDS = ["Hindi", "German", "Russian", "Turkish"]
 
 
 def _process_task_data(lg):
-    raw_datasets = load_dataset("xtreme", "PAN-X." + lg,
+    raw_datasets = load_dataset("xtreme", "udpos." + lg,
                                 cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")  # ["train_en", "val_en"])
 
     column_names = raw_datasets["test"].column_names
     features = raw_datasets["test"].features
 
     text_column_name = "tokens"
-    label_column_name = "ner_tags"
+    label_column_name = "pos_tags"
     lang_column_name = "lang"
 
     def get_label_list(labels):
@@ -140,14 +122,9 @@ def _process_task_data(lg):
     num_labels = len(label_list)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True, add_prefix_space=True)
+
     # tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base", use_fast=True, add_prefix_space=True)
     # Map that sends B-Xxx label to its I-Xxx counterpart
-    b_to_i_label = []
-    for idx, label in enumerate(label_list):
-        if label >= 1 and label % 2 == 1:
-            b_to_i_label.append(idx + 1)
-        else:
-            b_to_i_label.append(idx)
 
     def tokenize_and_align_labels(examples):
         tokenized_inputs = tokenizer(
@@ -162,22 +139,14 @@ def _process_task_data(lg):
         labels = []
         for i, label in enumerate(examples[label_column_name]):
             word_ids = tokenized_inputs.word_ids(batch_index=i)
-            previous_word_idx = None
             label_ids = []
             for word_idx in word_ids:
-                # Special tokens have a word id that is None. We set the label to -100 so they are automatically
-                # ignored in the loss function.
                 if word_idx is None:
                     label_ids.append(-100)
-                # We set the label for the first token of each word.
-                elif word_idx != previous_word_idx:
-                    label_ids.append(label_to_id[label[word_idx]])
-                # For the other tokens in a word, we set the label to either the current label or -100, depending on
-                # the label_all_tokens flag.
                 else:
-                    label_ids.append(b_to_i_label[label_to_id[label[word_idx]]])
-
-                previous_word_idx = word_idx
+                    # print(label)
+                    # print(word_idx)
+                    label_ids.append(label[word_idx])
 
             labels.append(label_ids)
         tokenized_inputs["ner_labels"] = labels
@@ -203,7 +172,7 @@ def process_task_data():
 
 # https://github.com/Babelscape/wikineural
 def get_train_dataloader():
-    raw_datasets = load_dataset("xtreme", "PAN-X.en", keep_in_memory=True,
+    raw_datasets = load_dataset("xtreme", "udpos.English", keep_in_memory=True,
                                 cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")  # ["train_en", "val_en"])
 
     train_en_tokens = raw_datasets["train"]["tokens"][:]
@@ -224,7 +193,7 @@ def get_train_dataloader():
             del raw_datasets[key]
 
     text_column_name = "new_tokens"
-    label_column_name = "ner_tags"
+    label_column_name = "pos_tags"
     lang_column_name = "lang"
 
     def get_label_list(labels):
@@ -241,14 +210,9 @@ def get_train_dataloader():
     num_labels = len(label_list)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True, add_prefix_space=True)
+
     # tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base", use_fast=True, add_prefix_space=True)
     # Map that sends B-Xxx label to its I-Xxx counterpart
-    b_to_i_label = []
-    for idx, label in enumerate(label_list):
-        if label >= 1 and label % 2 == 1:
-            b_to_i_label.append(idx + 1)
-        else:
-            b_to_i_label.append(idx)
 
     def tokenize_and_align_labels(examples):
         tokenized_inputs = tokenizer(
@@ -270,22 +234,12 @@ def get_train_dataloader():
         labels = []
         for i, label in enumerate(examples[label_column_name]):
             word_ids = tokenized_inputs.word_ids(batch_index=i)
-            previous_word_idx = None
             label_ids = []
             for word_idx in word_ids:
-                # Special tokens have a word id that is None. We set the label to -100 so they are automatically
-                # ignored in the loss function.
                 if word_idx is None:
                     label_ids.append(-100)
-                # We set the label for the first token of each word.
-                elif word_idx != previous_word_idx:
-                    label_ids.append(label_to_id[label[word_idx]])
-                # For the other tokens in a word, we set the label to either the current label or -100, depending on
-                # the label_all_tokens flag.
                 else:
-                    label_ids.append(b_to_i_label[label_to_id[label[word_idx]]])
-
-                previous_word_idx = word_idx
+                    label_ids.append(label_to_id[label[word_idx]])
 
             labels.append(label_ids)
         tokenized_inputs["ner_labels"] = labels
@@ -296,7 +250,6 @@ def get_train_dataloader():
         labels = []
         for i, label in enumerate(examples[label_column_name]):
             word_ids = original_tokenized_inputs.word_ids(batch_index=i)
-            previous_word_idx = None
             label_ids = []
             for word_idx in word_ids:
                 # Special tokens have a word id that is None. We set the label to -100 so they are automatically
@@ -304,14 +257,14 @@ def get_train_dataloader():
                 if word_idx is None:
                     label_ids.append(-100)
                 # We set the label for the first token of each word.
-                elif word_idx != previous_word_idx:
-                    label_ids.append(label_to_id[label[word_idx]])
+                else:
+                    label_ids.append(label[word_idx])
                 # For the other tokens in a word, we set the label to either the current label or -100, depending on
                 # the label_all_tokens flag.
-                else:
-                    label_ids.append(b_to_i_label[label_to_id[label[word_idx]]])
+                # else:
+                #    label_ids.append(b_to_i_label[label_to_id[label[word_idx]]])
 
-                previous_word_idx = word_idx
+                # previous_word_idx = word_idx
 
             labels.append(label_ids)
         tokenized_inputs["eng_input_ids"] = original_tokenized_inputs["input_ids"]
@@ -396,6 +349,7 @@ def main():
         all_loss = 0
         update_step = 0
         train_dataloader = get_train_dataloader()
+        print("train")
         for batch in tqdm(train_dataloader):
             loss, _ = model(**batch)
             all_loss += loss.item()
