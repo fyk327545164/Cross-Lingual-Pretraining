@@ -21,7 +21,7 @@ print(args.ratio, args.mode)
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True, add_prefix_space=True)
 
-global_label_list = [str(n) for n in range(17)]
+global_label_list = ["S"+str(n) for n in range(17)]
 
 eval_res = {}
 for _lg in LANGUAGE_IDS:
