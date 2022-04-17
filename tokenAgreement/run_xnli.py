@@ -196,8 +196,9 @@ def main():
             loss, _ = model(**batch)
             all_loss += loss.item()
             loss.backward()
-            scheduler.step_and_update_lr()
-            scheduler.zero_grad()
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
             update_step += 1
 
         print("epoch: {}, Update Steps {}, loss: {}\n".format(epoch, update_step, all_loss / update_step))
