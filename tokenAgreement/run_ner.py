@@ -58,7 +58,7 @@ class CrossLingualModel(nn.Module):
         loss = None
         if ner_labels is not None:
             ner_labels = ner_labels.to(self.xlm.device)
-            if eng_labels is not None:
+            if eng_labels is not None and args.mode == "align":
                 eng_labels = eng_labels.to(self.xlm.device)
                 ner_labels = torch.cat((ner_labels, eng_labels), 1)
 
