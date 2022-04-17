@@ -46,8 +46,8 @@ class CrossLingualModel(nn.Module):
         input_ids = input_ids.to(self.xlm.device)
         attention_mask = attention_mask.to(self.xlm.device)
         if eng_input_ids is not None:
-            eng_input_ids = eng_input_ids.to(self.xlm.device)
-            eng_attention_mask = eng_attention_mask.to(self.xlm.device)
+            eng_input_ids = eng_input_ids.to(self.xlm.device) if args.mode == "align" else None
+            eng_attention_mask = eng_attention_mask.to(self.xlm.device) if args.mode == "align" else None
 
         outputs = self.xlm(input_ids, attention_mask, eng_input_ids=eng_input_ids,
                            eng_attention_mask=eng_attention_mask)
