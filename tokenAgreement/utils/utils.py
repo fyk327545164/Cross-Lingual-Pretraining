@@ -21,7 +21,7 @@ def set_seed(seed=1234):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ratio', required=True, type=int)
+    parser.add_argument('--ratio', required=True, type=float)
     parser.add_argument('--mode', required=True, type=str)
     args = parser.parse_args()
 
