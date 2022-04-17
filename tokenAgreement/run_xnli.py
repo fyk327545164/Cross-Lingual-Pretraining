@@ -1,58 +1,26 @@
-from transformers import AutoTokenizer, AdamW, default_data_collator, XLMRobertaModel, BertModel, BatchEncoding
-from torch.nn.modules.loss import CrossEntropyLoss
-from tqdm import tqdm, trange
-from torch.utils.data import DataLoader
-import torch.nn as nn
-import torch
-from datasets import load_metric, ClassLabel
-import torch.utils.data.distributed
-from datasets import Dataset
+from utils.utils import *
+from utils.bert import BertModel, BertPooler
 
-from datasets import load_dataset
-import pickle
-import random
+set_seed()
+args = get_args()
 
-import argparse
-import numpy as np
-from collections import Counter
-
-np.random.seed(1234)
-torch.manual_seed(1234)
-random.seed(1234)
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--ratio', required=True, type=int)
-parser.add_argument('--lg', required=True, type=str)
-args = parser.parse_args()
-
-
-LR_PRETRAIN = 0.00002
-LR_FINETUNE = 0.00008
+LR_PRETRAIN = 0.00001
+LR_FINETUNE = 0.00009
 WARMUP_STEPS = 200
-
+TRAINING_STEPS = 8000
+MAX_LENGTH = 128
 MODEL_NAME = "bert-base-multilingual-cased"
+LANGUAGE_IDS = ["hi", "de", "ru", "tr"]
 
-with open("data/aligned-tokens-en-{}".format(args.lg), "rb") as fr:
-    aligned_tokens = pickle.load(fr)
-"""
-aligned_tokens = {}
-for key, val in _aligned_tokens.items():
-    aligned_tokens[key] = []
-    for _word, _count in Counter(val).most_common():
-        if len(aligned_tokens[key]) == 0:
-            aligned_tokens[key].append(_word)
-            #reak
-            _all_count = _count
-            continue
-        if _count/_all_count < 0.88:
-            break
-        aligned_tokens[key].append(_word)  
-"""
-random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(100 - args.ratio)]
-random.shuffle(random_index)
-print(random_index)
+aligned_tokens = get_aligned_tokens(LANGUAGE_IDS)
 
-res_path = "res/xnli-{}-{}".format(args.lg, args.ratio)
+print(args.ratio, args.mode)
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+eval_res = {}
+for _lg in LANGUAGE_IDS:
+    eval_res[_lg] = []
 
 
 class CrossLingualModel(nn.Module):
@@ -60,6 +28,8 @@ class CrossLingualModel(nn.Module):
         super().__init__()
 
         self.xlm = BertModel.from_pretrained(MODEL_NAME)
+
+        self.pooler = BertPooler(self.xlm.config)
 
         self.hidden_size = 768
         self.dropout = nn.Dropout(0.1)
@@ -69,137 +39,135 @@ class CrossLingualModel(nn.Module):
 
         self.loss = CrossEntropyLoss()
 
-    def forward(self, input_ids, attention_mask, labels=None, **kwargs):
+    def forward(self, input_ids, attention_mask, token_type_ids=None, eng_input_ids=None,
+                eng_attention_mask=None, eng_token_type_ids=None, labels=None, **kwargs):
+
         input_ids = input_ids.to(self.xlm.device)
         attention_mask = attention_mask.to(self.xlm.device)
-        outputs = self.xlm(input_ids, attention_mask)
+        token_type_ids = token_type_ids.to(self.xlm.device)
+        if eng_input_ids is not None:
+            eng_input_ids = eng_input_ids.to(self.xlm.device) if args.mode == "align" else None
+            eng_attention_mask = eng_attention_mask.to(self.xlm.device) if args.mode == "align" else None
+            eng_token_type_ids = eng_token_type_ids.to(self.xlm.device) if args.mode == "align" else None
 
-        sequence_output = self.dropout(outputs[1])
-        logits = self.nli_classifier(sequence_output)
+        outputs = self.xlm(input_ids, attention_mask, token_type_ids=token_type_ids, eng_input_ids=eng_input_ids,
+                           eng_attention_mask=eng_attention_mask, eng_token_type_ids=eng_token_type_ids)
+
+        sequence_output = self.dropout(outputs)
+
+        logits = self.pooler(sequence_output[:,:MAX_LENGTH])
+        logits = self.nli_classifier(logits)
+
+        if eng_input_ids is not None:
+            logits_eng = self.pooler(sequence_output[:, MAX_LENGTH:])
+            logits_eng = self.nli_classifier(logits_eng)
 
         loss = None
         if labels is not None:
-            ner_labels = labels.to(self.xlm.device)
-            loss = self.loss(logits.view(-1, self.num_labels), ner_labels.view(-1))
-
+            labels = labels.to(self.xlm.device)
+            loss = self.loss(logits.view(-1, self.num_labels), labels.view(-1))
+            if eng_input_ids is not None:
+                loss += self.loss(logits_eng.view(-1, self.num_labels), labels.view(-1))
+                loss = loss / 2
         return loss, logits
 
 
-LANGUAGE_IDS = [args.lg]
-
-
-def process_task_data():
-
-    eval_dataset = load_dataset("xnli", LANGUAGE_IDS[0], split="test")  # ["train_en", "val_en"])
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+def _process_task_data(lg):
+    eval_dataset = load_dataset("xnli", lg, split="test",
+                                cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")
 
     def preprocess_function(examples):
-        # Tokenize the texts
         return tokenizer(
             examples["premise"],
             examples["hypothesis"],
             padding="max_length",
-            max_length=128,
+            max_length=MAX_LENGTH,
             truncation=True,
         )
 
     eval_dataset = eval_dataset.map(
-                preprocess_function,
-                batched=True,
-                load_from_cache_file=True,
-                desc="Running tokenizer on validation dataset",
-            )
+        preprocess_function,
+        batched=True,
+        load_from_cache_file=True,
+        desc="Running tokenizer on validation dataset",
+    )
+    return eval_dataset
 
+
+def process_task_data():
     eval_dataloaders = {}
     for lg in LANGUAGE_IDS:
-        eval_dataloaders[lg] = DataLoader(eval_dataset, collate_fn=default_data_collator,
+        eval_dataloaders[lg] = DataLoader(_process_task_data(lg), collate_fn=default_data_collator,
                                           batch_size=64)
 
     return eval_dataloaders
 
 
 def get_train_dataloader():
-
-    train_dataset = load_dataset("xnli", "en", split="train")
+    train_dataset = load_dataset("xnli", "en", split="train", keep_in_memory=True,
+                                 cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")
 
     train_premise = train_dataset["premise"][:]
     train_hypothesis = train_dataset["hypothesis"][:]
 
-    train_dataset = train_dataset.remove_columns(["premise", "hypothesis"])
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
     new_premise = []
     new_hypothesis = []
-    for i in trange(len(train_premise)):
+    for i in range(len(train_premise)):
         tokenized_premise = " ".join(tokenizer.tokenize(train_premise[i])).replace(" ##", "").split()
         tokenized_hypothesis = " ".join(tokenizer.tokenize(train_hypothesis[i])).replace(" ##", "").split()
 
         for token_i in range(len(tokenized_premise)):
             cur_token = tokenized_premise[token_i].lower()
             if cur_token in aligned_tokens:
-                if random.choice(random_index) == 0:
+                if random.random() < args.ratio:
                     tokenized_premise[token_i] = random.choice(aligned_tokens[cur_token])
 
         for token_i in range(len(tokenized_hypothesis)):
             cur_token = tokenized_hypothesis[token_i].lower()
             if cur_token in aligned_tokens:
-                if random.choice(random_index) == 0:
+                if random.random() < args.ratio:
                     tokenized_hypothesis[token_i] = random.choice(aligned_tokens[cur_token])
         new_premise.append(" ".join(tokenized_premise))
         new_hypothesis.append(" ".join(tokenized_hypothesis))
 
-    train_dataset = train_dataset.add_column("premise", new_premise)
-    train_dataset = train_dataset.add_column("hypothesis", new_hypothesis)
-
+    train_dataset = train_dataset.add_column("premise_new", new_premise)
+    train_dataset = train_dataset.add_column("hypothesis_new", new_hypothesis)
 
     def preprocess_function(examples):
-        return tokenizer(
-            examples["premise"],
-            examples["hypothesis"],
+        tokenized_inputs = tokenizer(
+            examples["premise_new"],
+            examples["hypothesis_new"],
             padding="max_length",
-            max_length=128,
+            max_length=MAX_LENGTH,
             truncation=True,
         )
 
+        original_tokenized_inputs = tokenizer(
+            examples["premise"],
+            examples["hypothesis"],
+            padding="max_length",
+            max_length=MAX_LENGTH,
+            truncation=True,
+        )
+
+        tokenized_inputs["eng_input_ids"] = original_tokenized_inputs["input_ids"]
+        tokenized_inputs["eng_token_type_ids"] = original_tokenized_inputs["token_type_ids"]
+        tokenized_inputs["eng_attention_mask"] = original_tokenized_inputs["attention_mask"]
+
+        return tokenized_inputs
+
     train_dataset = train_dataset.map(
-                preprocess_function,
-                batched=True,
-                load_from_cache_file=False,
+        preprocess_function,
+        batched=True,
+        keep_in_memory=True
     )
 
     train_dataloader = DataLoader(train_dataset, collate_fn=default_data_collator, shuffle=True,
-                                          batch_size=64)
+                                  batch_size=64)
 
     return train_dataloader
-
-
-class ReverseSqrtScheduler:
-    def __init__(self, optimizer, lr, n_warmup_steps):
-        self._optimizer = optimizer
-        self.lr_mul = lr
-        self.n_warmup_steps = n_warmup_steps
-        self.n_steps = 0
-
-        self.decay_factor = [_lr * n_warmup_steps ** 0.5 for _lr in lr]
-        self.lr_step = [(_lr - 0) / n_warmup_steps for _lr in lr]
-
-    def step_and_update_lr(self):
-        self._update_learning_rate()
-        self._optimizer.step()
-
-    def zero_grad(self):
-        self._optimizer.zero_grad()
-
-    def _update_learning_rate(self):
-        self.n_steps += 1
-        if self.n_steps < self.n_warmup_steps:
-            lr = [self.n_steps * _lr for _lr in self.lr_step]
-        else:
-            lr = [_decay_factor * self.n_steps ** -0.5 for _decay_factor in self.decay_factor]
-
-        for i, param_group in enumerate(self._optimizer.param_groups):
-            param_group['lr'] = lr[i]
 
 
 def main():
@@ -217,14 +185,9 @@ def main():
 
     optimizer = AdamW(
         [{'params': pretrained_params, 'lr': LR_PRETRAIN}, {'params': finetune_params, 'lr': LR_FINETUNE}])
-    scheduler = ReverseSqrtScheduler(optimizer, [LR_PRETRAIN, LR_FINETUNE], WARMUP_STEPS)
-    # optimizer = AdamW(model.parameters(), LR_PRETRAIN)
-    # scheduler = ReverseSqrtScheduler(optimizer, [LR_PRETRAIN], WARMUP_STEPS)
+    scheduler = get_linear_schedule_with_warmup(optimizer, WARMUP_STEPS, TRAINING_STEPS)
 
-    # with open("xnli-results", 'a') as fw:
-    #     fw.write('----------------------\n')
-
-    for epoch in range(6):
+    for epoch in range(5):
         model.train()
         all_loss = 0
         update_step = 0
@@ -242,11 +205,13 @@ def main():
             model.eval()
             evaluate(model, eval_dataloaders)
 
+    for lg in eval_res.keys():
+        best_res = max(eval_res[lg])
+        print(lg, best_res, eval_res[lg].index(best_res))
+
 
 def evaluate(model, dataloaders):
     for lg, dataloader in dataloaders.items():
-        # with open(res_path, 'a') as fw:
-        #     fw.write('{}-{} \n'.format(args.lg, args.ratio))
         _evaluate(model, dataloader, lg)
 
 
@@ -267,10 +232,10 @@ def _evaluate(model, dataloader, lg):
             if p == label:
                 acc += 1
 
-    print("Accuracy: {}".format(acc/nums))
+    eval_res[lg].append(float(acc / nums))
+    print("Accuracy: {}, {}".format(acc / nums, lg))
 
-    with open(res_path, 'a') as fw:
-        fw.write("Accuracy: {}\n".format(acc/nums))
+    return acc / nums
 
 
 if __name__ == "__main__":

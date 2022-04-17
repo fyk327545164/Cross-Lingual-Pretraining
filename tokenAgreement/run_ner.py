@@ -1,68 +1,30 @@
-from transformers import get_linear_schedule_with_warmup, AutoTokenizer, AdamW, \
-    default_data_collator
-from torch.nn.modules.loss import CrossEntropyLoss
-from tqdm import tqdm, trange
-from torch.utils.data import DataLoader
-import torch.nn as nn
-import torch
-from datasets import load_metric, ClassLabel
-import torch.utils.data.distributed
-from datasets import Dataset
+from utils.utils import *
+from utils.bert import BertModel
 
-from datasets import load_dataset
-import pickle
-import random
-
-import argparse
-import numpy as np
-from collections import Counter
-from bert import BertModel
-
-np.random.seed(1234)
-torch.manual_seed(1234)
-random.seed(1234)
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--ratio', required=True, type=int)
-parser.add_argument('--lg', required=True, type=str)
-args = parser.parse_args()
+set_seed()
+args = get_args()
 
 metric = load_metric("seqeval")
 
-global_label_list = ['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
-
 LR_PRETRAIN = 0.00001
 LR_FINETUNE = 0.00009
-WARMUP_STEPS = 100
-
+WARMUP_STEPS = 200
+TRAINING_STEPS = 8000
+MAX_LENGTH = 128
 MODEL_NAME = "bert-base-multilingual-cased"
+LANGUAGE_IDS = ["hi", "de", "ru", "tr"]
 
-aligned_tokens = {}
-for _lg in ["hi"]:  # "de","ru","tr"]:
-    with open("data/aligned-tokens-en-{}".format(_lg), "rb") as fr:
-        _aligned_tokens = pickle.load(fr)
-        for key, val in tqdm(_aligned_tokens.items()):
-            if key not in aligned_tokens:
-                aligned_tokens[key] = []
-            aligned_tokens[key] += val[:]
-            # ndom.shuffle(aligned_tokens[key])
-"""
-aligned_tokens = {}
-for key, val in _aligned_tokens.items():
-    aligned_tokens[key] = []
-    for _word, _count in Counter(val).most_common():
-        if len(aligned_tokens[key]) == 0:
-            aligned_tokens[key].append(_word)
-            #reak
-            _all_count = _count
-            continue
-        if _count/_all_count < 0.88:
-            break
-        aligned_tokens[key].append(_word)  
-"""
-random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(100 - args.ratio)]
-random.shuffle(random_index)
-print(random_index)
+aligned_tokens = get_aligned_tokens(LANGUAGE_IDS)
+
+print(args.ratio, args.mode)
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True, add_prefix_space=True)
+
+global_label_list = ['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
+
+eval_res = {}
+for _lg in LANGUAGE_IDS:
+    eval_res[_lg] = []
 
 
 class CrossLingualModel(nn.Module):
@@ -87,17 +49,11 @@ class CrossLingualModel(nn.Module):
             eng_input_ids = eng_input_ids.to(self.xlm.device)
             eng_attention_mask = eng_attention_mask.to(self.xlm.device)
 
-        # rint(input_ids.size())
-
         outputs = self.xlm(input_ids, attention_mask, eng_input_ids=eng_input_ids,
                            eng_attention_mask=eng_attention_mask)
 
-        sequence_output = self.dropout(outputs[0])
+        sequence_output = self.dropout(outputs)
         logits = self.ner_classifier(sequence_output)
-
-        # if eng_input_ids is not None:
-        #     eng_sequence_output = self.dropout(outputs[0][1])
-        #     eng_logits = self.ner_classifier(eng_sequence_output)
 
         loss = None
         if ner_labels is not None:
@@ -107,24 +63,17 @@ class CrossLingualModel(nn.Module):
                 ner_labels = torch.cat((ner_labels, eng_labels), 1)
 
             loss = self.loss(logits.view(-1, self.num_labels), ner_labels.view(
-                -1))  # + self.loss(eng_logits.view(-1, self.num_labels), eng_labels.view(-1))
+                -1))
 
         return loss, logits
 
 
-LANGUAGE_IDS = ["hi", "de", "ru", "tr"]  # [args.lg]  # , "es", "nl", "pl", "ru", "it", "fr", "pt"]
-
-
 def _process_task_data(lg):
     raw_datasets = load_dataset("xtreme", "PAN-X." + lg,
-                                cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")  # ["train_en", "val_en"])
-
-    column_names = raw_datasets["test"].column_names
-    features = raw_datasets["test"].features
+                                cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")
 
     text_column_name = "tokens"
     label_column_name = "ner_tags"
-    lang_column_name = "lang"
 
     def get_label_list(labels):
         unique_labels = set()
@@ -137,11 +86,6 @@ def _process_task_data(lg):
     label_list = get_label_list(raw_datasets["test"][label_column_name])
     label_to_id = {l: i for i, l in enumerate(label_list)}
 
-    num_labels = len(label_list)
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True, add_prefix_space=True)
-    # tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base", use_fast=True, add_prefix_space=True)
-    # Map that sends B-Xxx label to its I-Xxx counterpart
     b_to_i_label = []
     for idx, label in enumerate(label_list):
         if label >= 1 and label % 2 == 1:
@@ -152,7 +96,7 @@ def _process_task_data(lg):
     def tokenize_and_align_labels(examples):
         tokenized_inputs = tokenizer(
             examples[text_column_name],
-            max_length=128,
+            max_length=MAX_LENGTH,
             padding="max_length",
             truncation=True,
             # We use this argument because the texts in our dataset are lists of words (with a label for each word).
@@ -201,31 +145,25 @@ def process_task_data():
     return eval_dataloaders
 
 
-# https://github.com/Babelscape/wikineural
 def get_train_dataloader():
     raw_datasets = load_dataset("xtreme", "PAN-X.en", keep_in_memory=True,
-                                cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")  # ["train_en", "val_en"])
+                                cache_dir="/brtx/605-nvme1/yukunfeng/cross-lingual/tokenAgreement/data/huggingface")
 
     train_en_tokens = raw_datasets["train"]["tokens"][:]
 
-    for i in trange(len(train_en_tokens)):
+    for i in range(len(train_en_tokens)):
         for token_i in range(len(train_en_tokens[i])):
             cur_token = train_en_tokens[i][token_i].lower()
             if cur_token in aligned_tokens:
-                if random.choice(random_index) == 0:
+                if random.random() < args.ratio:
                     train_en_tokens[i][token_i] = random.choice(aligned_tokens[cur_token])
     raw_datasets["train"] = raw_datasets["train"].add_column("new_tokens", train_en_tokens)
-
-    column_names = raw_datasets["train"].column_names
-    features = raw_datasets["train"].features
 
     for key in list(raw_datasets.keys()):
         if key != "train":
             del raw_datasets[key]
 
-    text_column_name = "new_tokens"
     label_column_name = "ner_tags"
-    lang_column_name = "lang"
 
     def get_label_list(labels):
         unique_labels = set()
@@ -238,11 +176,6 @@ def get_train_dataloader():
     label_list = get_label_list(raw_datasets["train"][label_column_name])
     label_to_id = {l: i for i, l in enumerate(label_list)}
 
-    num_labels = len(label_list)
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True, add_prefix_space=True)
-    # tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base", use_fast=True, add_prefix_space=True)
-    # Map that sends B-Xxx label to its I-Xxx counterpart
     b_to_i_label = []
     for idx, label in enumerate(label_list):
         if label >= 1 and label % 2 == 1:
@@ -253,7 +186,7 @@ def get_train_dataloader():
     def tokenize_and_align_labels(examples):
         tokenized_inputs = tokenizer(
             examples["new_tokens"],
-            max_length=128,
+            max_length=MAX_LENGTH,
             padding="max_length",
             truncation=True,
             is_split_into_words=True,
@@ -261,7 +194,7 @@ def get_train_dataloader():
 
         original_tokenized_inputs = tokenizer(
             examples["tokens"],
-            max_length=128,
+            max_length=MAX_LENGTH,
             padding="max_length",
             truncation=True,
             is_split_into_words=True,
@@ -273,15 +206,10 @@ def get_train_dataloader():
             previous_word_idx = None
             label_ids = []
             for word_idx in word_ids:
-                # Special tokens have a word id that is None. We set the label to -100 so they are automatically
-                # ignored in the loss function.
                 if word_idx is None:
                     label_ids.append(-100)
-                # We set the label for the first token of each word.
                 elif word_idx != previous_word_idx:
                     label_ids.append(label_to_id[label[word_idx]])
-                # For the other tokens in a word, we set the label to either the current label or -100, depending on
-                # the label_all_tokens flag.
                 else:
                     label_ids.append(b_to_i_label[label_to_id[label[word_idx]]])
 
@@ -299,15 +227,10 @@ def get_train_dataloader():
             previous_word_idx = None
             label_ids = []
             for word_idx in word_ids:
-                # Special tokens have a word id that is None. We set the label to -100 so they are automatically
-                # ignored in the loss function.
                 if word_idx is None:
                     label_ids.append(-100)
-                # We set the label for the first token of each word.
                 elif word_idx != previous_word_idx:
                     label_ids.append(label_to_id[label[word_idx]])
-                # For the other tokens in a word, we set the label to either the current label or -100, depending on
-                # the label_all_tokens flag.
                 else:
                     label_ids.append(b_to_i_label[label_to_id[label[word_idx]]])
 
@@ -336,34 +259,6 @@ def get_train_dataloader():
     return train_dataloader
 
 
-class ReverseSqrtScheduler:
-    def __init__(self, optimizer, lr, n_warmup_steps):
-        self._optimizer = optimizer
-        self.lr_mul = lr
-        self.n_warmup_steps = n_warmup_steps
-        self.n_steps = 0
-
-        self.decay_factor = [_lr * n_warmup_steps ** 0.5 for _lr in lr]
-        self.lr_step = [(_lr - 0) / n_warmup_steps for _lr in lr]
-
-    def step_and_update_lr(self):
-        self._update_learning_rate()
-        self._optimizer.step()
-
-    def zero_grad(self):
-        self._optimizer.zero_grad()
-
-    def _update_learning_rate(self):
-        self.n_steps += 1
-        if self.n_steps < self.n_warmup_steps:
-            lr = [self.n_steps * _lr for _lr in self.lr_step]
-        else:
-            lr = [_decay_factor * self.n_steps ** -0.5 for _decay_factor in self.decay_factor]
-
-        for i, param_group in enumerate(self._optimizer.param_groups):
-            param_group['lr'] = lr[i]
-
-
 def main():
     eval_dataloaders = process_task_data()
 
@@ -379,19 +274,9 @@ def main():
 
     optimizer = AdamW(
         [{'params': pretrained_params, 'lr': LR_PRETRAIN}, {'params': finetune_params, 'lr': LR_FINETUNE}])
-    scheduler = get_linear_schedule_with_warmup(optimizer, WARMUP_STEPS,
-                                                6000)  # ReverseSqrtScheduler(optimizer, [LR_PRETRAIN, LR_FINETUNE], WARMUP_STEPS)
-    # optimizer = AdamW(model.parameters(), LR_PRETRAIN)
-    # scheduler = ReverseSqrtScheduler(optimizer, [LR_PRETRAIN], WARMUP_STEPS)
+    scheduler = get_linear_schedule_with_warmup(optimizer, WARMUP_STEPS, TRAINING_STEPS)
 
-    with open("results", 'a') as fw:
-        fw.write('----------------------\n')
-
-    # ith torch.no_grad():
-    #    model.eval()
-    #    evaluate(model, eval_dataloaders)
-
-    for epoch in range(7):
+    for epoch in range(8):
         model.train()
         all_loss = 0
         update_step = 0
@@ -410,8 +295,12 @@ def main():
             model.eval()
             evaluate(model, eval_dataloaders)
 
+    for lg in eval_res.keys():
+        best_res = max(eval_res[lg])
+        print(lg, best_res, eval_res[lg].index(best_res))
 
-def compute_metrics(p):
+
+def compute_metrics(p, lg):
     predictions, labels = p
     label_list = global_label_list
 
@@ -430,16 +319,13 @@ def compute_metrics(p):
            "recall": results["overall_recall"],
            "f1": results["overall_f1"],
            "accuracy": results["overall_accuracy"]}
-    with open("results", 'a') as fw:
-        fw.write('{} \n'.format(res))
+    print(lg)
     print(res)
+    eval_res[lg].append(float(res["f1"]))
 
 
 def evaluate(model, dataloaders):
     for lg, dataloader in dataloaders.items():
-        with open("results", 'a') as fw:
-            fw.write('{}-{} \n'.format(lg, args.ratio))
-        print(lg)
         _evaluate(model, dataloader, lg)
 
 
@@ -457,7 +343,6 @@ def _evaluate(model, dataloader, lg):
         preds += index[:]
         targets += label_ids[:]
 
-    compute_metrics((preds, targets))
-
+    compute_metrics((preds, targets), lg)
 
 main()

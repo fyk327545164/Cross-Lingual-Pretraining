@@ -940,7 +940,8 @@ class BertModel(BertPreTrainedModel):
             output_hidden_states=None,
             return_dict=None,
             eng_input_ids=None,
-            eng_attention_mask=None
+            eng_attention_mask=None,
+            eng_token_type_ids=None
     ):
         r"""
         encoder_hidden_states  (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
@@ -1036,10 +1037,12 @@ class BertModel(BertPreTrainedModel):
         )
         eng_embedding_output = None
         if eng_input_ids is not None:
+            if eng_token_type_ids is None:
+                eng_token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
             eng_embedding_output = self.embeddings(
                 input_ids=eng_input_ids,
                 position_ids=position_ids,
-                token_type_ids=token_type_ids,
+                token_type_ids=eng_token_type_ids,
                 inputs_embeds=None,
                 past_key_values_length=past_key_values_length,
             )
@@ -1062,21 +1065,21 @@ class BertModel(BertPreTrainedModel):
         )
         # rint(encoder_outputs)
         sequence_output = encoder_outputs[0]
-        pooled_output = self.pooler(sequence_output[:, :128, :]) if self.pooler is not None else None
-        pooled_output_eng = None
-        if eng_input_ids is not None:
-            pooled_output_eng = self.pooler(sequence_output[:, 128:, :]) if self.pooler is not None else None
+        # pooled_output = self.pooler(sequence_output[:, :128, :]) if self.pooler is not None else None
+        # pooled_output_eng = None
+        # if eng_input_ids is not None:
+        #     pooled_output_eng = self.pooler(sequence_output[:, 128:, :]) if self.pooler is not None else None
         # if not return_dict:
-        return (sequence_output, pooled_output, pooled_output_eng) + encoder_outputs[1:]
+        return sequence_output#, pooled_output, pooled_output_eng) + encoder_outputs[1:]
 
-        return BaseModelOutputWithPoolingAndCrossAttentions(
-            last_hidden_state=sequence_output,
-            pooler_output=pooled_output,
-            past_key_values=encoder_outputs.past_key_values,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-            cross_attentions=encoder_outputs.cross_attentions,
-        )
+        # return BaseModelOutputWithPoolingAndCrossAttentions(
+        #     last_hidden_state=sequence_output,
+        #     pooler_output=pooled_output,
+        #     past_key_values=encoder_outputs.past_key_values,
+        #     hidden_states=encoder_outputs.hidden_states,
+        #     attentions=encoder_outputs.attentions,
+        #     cross_attentions=encoder_outputs.cross_attentions,
+        # )
 
 
 @add_start_docstrings(
