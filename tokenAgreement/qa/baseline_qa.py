@@ -317,9 +317,9 @@ def main():
         valid_datasets = {}
         if args.eval_lang == "all":
             for lang in all_lang_list:
-                valid_datasets[lang] = load_dataset("xquad", f"xquad.{lang}")
+                valid_datasets[lang] = load_dataset("xquad", f"xquad.{lang}")["validation"]
         else:
-            valid_datasets[args.eval_lang] = load_dataset("xquad", f"xquad.{args.eval_lang}")
+            valid_datasets[args.eval_lang] = load_dataset("xquad", f"xquad.{args.eval_lang}")["validation"]
     else:
         data_files = {}
         if args.train_file is not None:
@@ -600,7 +600,7 @@ def main():
     # eval_examples = raw_datasets["validation"]
     eval_examples = {}
     for lang in valid_datasets:
-        eval_examples[lang] = valid_datasets[lang]["validation"]
+        eval_examples[lang] = valid_datasets[lang]
 
         if args.max_eval_samples is not None:
             # We will select sample from whole data
@@ -608,7 +608,7 @@ def main():
     # Validation Feature Creation
     eval_dataset={}
 
-    
+
     for lang in eval_examples:
         with accelerator.main_process_first():
             eval_example = eval_examples[lang]
