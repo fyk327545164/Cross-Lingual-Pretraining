@@ -447,9 +447,10 @@ def main():
             if answers_text in examples[context_column_name][idx]:
                 new_answer_start.append(examples[context_column_name][idx].index(answers_text))
             else:
-                print(f"idx: {idx}, context: {examples[context_column_name][idx]}\n")
-                print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}\n")
-                print(f"idx: {idx}, orignal: {orginal_context}\n")
+                pass
+                # print(f"idx: {idx}, context: {examples[context_column_name][idx]}\n")
+                # print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}\n")
+                # print(f"idx: {idx}, orignal: {orginal_context}\n")
 
             examples[answer_column_name][idx]["answer_start"] = new_answer_start
             # print(
@@ -612,7 +613,7 @@ def main():
                 prepare_validation_features,
                 batched=True,
                 num_proc=args.preprocessing_num_workers,
-                remove_columns=valid_column_names,
+                remove_columns=valid_column_names[lang],
                 load_from_cache_file=not args.overwrite_cache,
                 desc="Running tokenizer on validation dataset",
             )
