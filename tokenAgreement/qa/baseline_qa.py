@@ -47,6 +47,7 @@ MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
+
 class ReverseSqrtScheduler:
     def __init__(self, optimizer, lr, n_warmup_steps):
         self._optimizer = optimizer
@@ -274,6 +275,11 @@ def parse_args():
 def main():
     args = parse_args()
 
+    if args.ratio == 0:
+        check_point_folder = f"../../../drive/MyDrive/CS546/ckpt/mbert/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
+        import os
+        print(os.path.isdir('"../../../drive/MyDrive/CS546'))
+        print(check_point_folder)
     if args.replace_table_file is not None:
         with open(args.replace_table_file, "rb") as fr:
             aligned_tokens_table = pickle.load(fr)
@@ -854,7 +860,7 @@ def main():
                 f = run_eval()
                 if f > max_f1:
                     max_f1 = f
-                    torch.save(model.state_dict(), "./checkpoint_best.pt")
+                    torch.save(model.state_dict(), check_point_folder + f"f1_{max_f1}.pt")
                     current_patience = 0
                 else:
                     current_patience += 1
@@ -869,7 +875,8 @@ def main():
             f = run_eval()
             if f > max_f1:
                 max_f1 = f
-                torch.save(model.state_dict(), "./checkpoint_best.pt")
+                torch.save(model.state_dict(), check_point_folder + f"f1_{max_f1}.pt")
+                print( check_point_folder + f"f1_{max_f1}.pt")
                 current_patience = 0
             else:
                 current_patience += 1
