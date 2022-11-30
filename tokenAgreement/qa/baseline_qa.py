@@ -607,13 +607,16 @@ def main():
             eval_examples[lang] = eval_examples[lang].select(range(args.max_eval_samples))
     # Validation Feature Creation
     eval_dataset={}
+
+    
     for lang in eval_examples:
         with accelerator.main_process_first():
-            eval_dataset[lang] = eval_examples[lang].map(
+            eval_example = eval_examples[lang]
+            eval_dataset[lang] = eval_example.map(
                 prepare_validation_features,
                 batched=True,
                 num_proc=args.preprocessing_num_workers,
-                remove_columns=valid_column_names[lang],
+                remove_columns=valid_column_names,
                 load_from_cache_file=not args.overwrite_cache,
                 desc="Running tokenizer on validation dataset",
             )
