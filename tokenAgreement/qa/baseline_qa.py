@@ -34,10 +34,9 @@ from transformers.file_utils import get_full_repo_name
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 from utils_qa import postprocess_qa_predictions
+
 # all_lang_list  = ["ar","de","el","en","es","hi","ro","ru","th","tr","vi","zh"]
-all_lang_list  = ["ar","de","el","en","es","hi","ro","ru","tr","vi","zh"]
-
-
+all_lang_list = ["ar", "de", "el", "en", "es", "hi", "ro", "ru", "tr", "vi", "zh"]
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.18.0.dev0")
@@ -520,7 +519,7 @@ def main():
     if "train" not in raw_datasets:
         raise ValueError("--do_train requires a train dataset")
     train_dataset = raw_datasets["train"]
-    if args.max_train_samples is not None:
+    if args.max_train_samples != 0:
         # We will select sample from whole data if agument is specified
         train_dataset = train_dataset.select(range(args.max_train_samples))
 
@@ -534,7 +533,7 @@ def main():
             load_from_cache_file=not args.overwrite_cache,
             desc="Running tokenizer on train dataset",
         )
-        if args.max_train_samples is not None:
+        if args.max_train_samples != 0:
             # Number of samples might increase during Feature Creation, We select only specified max samples
             train_dataset = train_dataset.select(range(args.max_train_samples))
 
@@ -589,12 +588,10 @@ def main():
         raise ValueError("--do_eval requires a validation dataset")
 
     eval_examples = valid_datasets
-    if args.max_eval_samples is not None:
+    if args.max_eval_samples != 0 :
         # We will select sample from whole data
         eval_examples = eval_examples.select(range(args.max_eval_samples))
     # Validation Feature Creation
-
-
 
     with accelerator.main_process_first():
 
@@ -607,7 +604,7 @@ def main():
             desc="Running tokenizer on validation dataset",
         )
 
-    if args.max_eval_samples is not None:
+    if args.max_eval_samples != 0 :
         # During Feature creation dataset samples might increase, we will select required samples again
         eval_dataset = eval_dataset.select(range(args.max_eval_samples))
 
@@ -797,6 +794,9 @@ def main():
             log_file_fr.write(f"train:-----")
 
         model.train()
+        f = eval_metric["f1"]
+
+        return f
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -817,12 +817,20 @@ def main():
     with open(args.output_log_file, "w") as log_file_fr:
         log_file_fr.write("start\n")
 
+    max_f1 = 0.0
+    max_patience, current_patience = 3, 0
+    exit = False
     for epoch in range(args.num_train_epochs):
+        if exit:
+            break
+
         model.train()
         epoch_loss = 0
         epoch_step = 0
 
         for step, batch in enumerate(train_dataloader):
+            if exit:
+                break
             outputs = model(**batch)
             loss = outputs.loss
             loss = loss / args.gradient_accumulation_steps
@@ -841,16 +849,35 @@ def main():
                 with open(args.output_log_file, "a") as log_file_fr:
                     log_file_fr.write(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
                 print(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
+
             if args.eval_interval != -1 and completed_steps % args.eval_interval == 0:
-                run_eval()
+                f = run_eval()
+                if f > max_f1:
+                    max_f1 = f
+                    torch.save(model.state_dict(), "./checkpoint_best.pt")
+                    current_patience = 0
+                else:
+                    current_patience += 1
+                    if current_patience > max_patience:
+                        if_exit = True
+
             if completed_steps >= args.max_train_steps:
                 break
 
-        run_eval()
+        f = run_eval()
+        if args.eval_interval != -1 and completed_steps % args.eval_interval == 0:
+            f = run_eval()
+            if f > max_f1:
+                max_f1 = f
+                torch.save(model.state_dict(), "./checkpoint_best.pt")
+                current_patience = 0
+            else:
+                current_patience += 1
+                if current_patience > max_patience:
+                    if_exit = True
         with open(args.output_log_file, "a") as log_file_fr:
             log_file_fr.write(f"epoch {epoch} end \n")
         print(f"epoch {epoch} end \n")
-
 
     # Prediction
     if args.do_predict:
