@@ -223,7 +223,7 @@ def _evaluate(model, dataloader, lg):
     for batch in tqdm(dataloader):
         label_ids = batch["labels"].view(-1).tolist()
 
-        _, logits = model(batch["input_ids"], batch["attention_mask"], batch["token_type_ids"])
+        _, logits = model(batch["input_ids"], batch["attention_mask"])
 
         logits = logits.cpu()
         preds = torch.argmax(logits, -1).view(-1).tolist()
