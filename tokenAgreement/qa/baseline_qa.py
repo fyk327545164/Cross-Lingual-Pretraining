@@ -34,7 +34,6 @@ from transformers.file_utils import get_full_repo_name
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 from utils_qa import postprocess_qa_predictions
-
 # all_lang_list  = ["ar","de","el","en","es","hi","ro","ru","th","tr","vi","zh"]
 all_lang_list  = ["ar","de","el","en","es","hi","ro","ru","tr","vi","zh"]
 
@@ -314,12 +313,7 @@ def main():
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
-        valid_datasets = {}
-        if args.eval_lang == "all":
-            for lang in all_lang_list:
-                valid_datasets[lang] = load_dataset("xquad", f"xquad.{lang}")["validation"]
-        else:
-            valid_datasets[args.eval_lang] = load_dataset("xquad", f"xquad.{args.eval_lang}")["validation"]
+        valid_datasets = load_dataset("xquad", f"xquad.{args.eval_lang}")["validation"]
     else:
         data_files = {}
         if args.train_file is not None:
@@ -368,11 +362,7 @@ def main():
     # Preprocessing the datasets.
     # Preprocessing is slight different for training and evaluation.
     column_names = raw_datasets["train"].column_names
-
-    if args.eval_lang == "all":
-        valid_column_names = valid_datasets["ar"].column_names
-    else:
-        valid_column_names = valid_datasets[args.eval_lang].column_names
+    valid_column_names = valid_datasets.column_names
 
     question_column_name = "question" if "question" in column_names else column_names[0]
     context_column_name = "context" if "context" in column_names else column_names[1]
@@ -597,34 +587,29 @@ def main():
 
     if "validation" not in raw_datasets:
         raise ValueError("--do_eval requires a validation dataset")
-    # eval_examples = raw_datasets["validation"]
-    eval_examples = {}
-    for lang in valid_datasets:
-        eval_examples[lang] = valid_datasets[lang]
 
-        if args.max_eval_samples is not None:
-            # We will select sample from whole data
-            eval_examples[lang] = eval_examples[lang].select(range(args.max_eval_samples))
+    eval_examples = valid_datasets
+    if args.max_eval_samples is not None:
+        # We will select sample from whole data
+        eval_examples = eval_examples.select(range(args.max_eval_samples))
     # Validation Feature Creation
-    eval_dataset={}
 
 
-    for lang in eval_examples:
-        with accelerator.main_process_first():
-            eval_example = eval_examples[lang]
-            eval_dataset[lang] = eval_example.map(
-                prepare_validation_features,
-                batched=True,
-                num_proc=args.preprocessing_num_workers,
-                remove_columns=valid_column_names,
-                load_from_cache_file=not args.overwrite_cache,
-                desc="Running tokenizer on validation dataset",
-            )
-    for lang in eval_dataset:
 
-        if args.max_eval_samples is not None:
-            # During Feature creation dataset samples might increase, we will select required samples again
-            eval_dataset[lang] = eval_dataset[lang].select(range(args.max_eval_samples))
+    with accelerator.main_process_first():
+
+        eval_dataset = eval_examples.map(
+            prepare_validation_features,
+            batched=True,
+            num_proc=args.preprocessing_num_workers,
+            remove_columns=valid_column_names,
+            load_from_cache_file=not args.overwrite_cache,
+            desc="Running tokenizer on validation dataset",
+        )
+
+    if args.max_eval_samples is not None:
+        # During Feature creation dataset samples might increase, we will select required samples again
+        eval_dataset = eval_dataset.select(range(args.max_eval_samples))
 
     if args.do_predict:
         if "test" not in raw_datasets:
@@ -666,12 +651,10 @@ def main():
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
     )
 
-    eval_dataloader = {}
-    for lang in eval_dataset:
-        eval_dataset_for_model = eval_dataset[lang].remove_columns(["example_id", "offset_mapping"])
-        eval_dataloader[lang] = DataLoader(
-            eval_dataset_for_model, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
-        )
+    eval_dataset_for_model = eval_dataset.remove_columns(["example_id", "offset_mapping"])
+    eval_dataloader = DataLoader(
+        eval_dataset_for_model, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
+    )
 
     if args.do_predict:
         predict_dataset_for_model = predict_dataset.remove_columns(["example_id", "offset_mapping"])
@@ -772,16 +755,16 @@ def main():
     else:
         args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
-    def run_eval(lang):
+    def run_eval():
         # Evaluation
         logger.info("\n***** Running Evaluation *****")
-        logger.info(f"  Num examples = {len(eval_dataset[lang])}")
+        logger.info(f"  Num examples = {len(eval_dataset)}")
         logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
 
         model.eval()
         all_start_logits = []
         all_end_logits = []
-        for step, batch in enumerate(eval_dataloader[lang]):
+        for step, batch in enumerate(eval_dataloader):
             with torch.no_grad():
                 outputs = model(**batch)
                 start_logits = outputs.start_logits
@@ -859,12 +842,11 @@ def main():
                     log_file_fr.write(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
                 print(f"\n step :{completed_steps} loss: {epoch_loss / epoch_step}")
             if args.eval_interval != -1 and completed_steps % args.eval_interval == 0:
-                for lang in eval_dataloader:
-                    run_eval(lang)
+                run_eval()
             if completed_steps >= args.max_train_steps:
                 break
-        for lang in eval_dataloader:
-            run_eval(lang)
+
+        run_eval()
         with open(args.output_log_file, "a") as log_file_fr:
             log_file_fr.write(f"epoch {epoch} end \n")
         print(f"epoch {epoch} end \n")
