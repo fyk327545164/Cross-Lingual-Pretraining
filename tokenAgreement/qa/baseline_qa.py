@@ -277,9 +277,8 @@ def main():
 
     if args.ratio == 0:
         check_point_folder = f"../../../drive/MyDrive/CS546/ckpt/mbert/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
-        import os
-        print(os.path.isdir('"../../../drive/MyDrive/CS546'))
-        print(check_point_folder)
+    else:
+        check_point_folder = f"../../../drive/MyDrive/CS546/ckpt/mbert_{args.ratio}/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
     if args.replace_table_file is not None:
         with open(args.replace_table_file, "rb") as fr:
             aligned_tokens_table = pickle.load(fr)
@@ -825,9 +824,9 @@ def main():
 
     max_f1 = 0.0
     max_patience, current_patience = 3, 0
-    exit = False
+    if_exit = False
     for epoch in range(args.num_train_epochs):
-        if exit:
+        if if_exit:
             break
 
         model.train()
@@ -835,7 +834,7 @@ def main():
         epoch_step = 0
 
         for step, batch in enumerate(train_dataloader):
-            if exit:
+            if if_exit:
                 break
             outputs = model(**batch)
             loss = outputs.loss
