@@ -95,10 +95,8 @@ def postprocess_qa_predictions(
     # Logging.
     logger.setLevel(log_level)
     logger.info(f"Post-processing {len(examples)} example predictions split into {len(features)} features.")
-    print("in util qa")
     # Let's loop over all the examples!
     for example_index, example in enumerate(tqdm(examples)):
-        print("example_index",example_index)
         # Those are the indices of the features associated to the current example.
         feature_indices = features_per_example[example_index]
 
@@ -209,7 +207,6 @@ def postprocess_qa_predictions(
                 all_predictions[example["id"]] = ""
             else:
                 all_predictions[example["id"]] = best_non_null_pred["text"]
-        print("len(all_predictions)",len(len(all_predictions)))
         # Make `predictions` JSON-serializable by casting np.float back to float.
         all_nbest_json[example["id"]] = [
             {k: (float(v) if isinstance(v, (np.float16, np.float32, np.float64)) else v) for k, v in pred.items()}
