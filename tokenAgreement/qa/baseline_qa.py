@@ -373,145 +373,6 @@ def main():
 
     max_seq_length = min(args.max_seq_length, tokenizer.model_max_length)
 
-    # Training preprocessing
-    def prepare_train_features(examples):
-        # Some of the questions have lots of whitespace on the left, which is not useful and will make the
-        # truncation of the context fail (the tokenized question will take a lots of space). So we remove that
-        # left whitespace
-        examples[question_column_name] = [q.lstrip() for q in examples[question_column_name]]
-
-        for idx in range(len(examples[context_column_name])):
-            context = examples[context_column_name][idx]
-            start = 0
-            end = 0
-            context_tokens = []
-            context_tokens_idx = []
-            is_space = context[start] == ' '
-            while start < len(context):
-                new_is_space = context[start] == ' '
-                if new_is_space == is_space:
-                    start += 1
-                else:
-                    sub_string = context[end:start]
-                    if len(sub_string.lstrip()) > 0:
-                        context_tokens.append(sub_string)
-                        context_tokens_idx.append(end)
-                    is_space = new_is_space
-                    end = start
-                    start += 1
-            context_tokens.append(context[end:start])
-            context_tokens_idx.append(end)
-
-            answers_text = examples[answer_column_name][idx]["text"][0]
-            answers_text_token = answers_text.split()
-            answers_text = " ".join(answers_text_token)
-            answers_start = examples[answer_column_name][idx]["answer_start"][0]
-            answer_range = (answers_start, answers_start + len(answers_text))
-
-            original_question = examples[question_column_name][idx][:]
-            question_tokens = examples[question_column_name][idx].split()
-            for token_idx in range(len(question_tokens)):
-                cur_token = question_tokens[token_idx].lower()
-                if cur_token in aligned_tokens_table:
-                    if random.choice(random_index) == 0:
-                        question_tokens[token_idx] = random.choice(aligned_tokens_table[cur_token])
-            examples[question_column_name][idx] = " ".join(question_tokens)
-
-            original_context = examples[context_column_name][idx][:]
-
-            for token_idx in range(len(context_tokens)):
-                cur_token, cur_token_idx = context_tokens[token_idx], context_tokens_idx[token_idx]
-                cur_token = cur_token.lower()
-                if not (answer_range[0] <= cur_token_idx <= answer_range[1]) and cur_token in aligned_tokens_table:
-                    if random.choice(random_index) == 0:
-                        context_tokens[token_idx] = random.choice(aligned_tokens_table[cur_token])
-            examples[context_column_name][idx] = " ".join(context_tokens)
-
-            new_answer_start = []
-
-            if answers_text in examples[context_column_name][idx]:
-                new_answer_start.append(examples[context_column_name][idx].index(answers_text))
-            else:
-                pass
-                # print(f"idx: {idx}, context: {examples[context_column_name][idx]}\n")
-                # print(f"idx: {idx}, answer: {examples[answer_column_name][idx]}\n")
-                # print(f"idx: {idx}, orignal: {orginal_context}\n")
-
-            examples[answer_column_name][idx]["answer_start"] = new_answer_start
-            # print(
-            #     f"\n after change context: {examples[context_column_name][idx]}\n question:{examples[question_column_name][idx]} \n answer: {examples[answer_column_name][idx]}")
-
-        # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
-        # in one example possible giving several features when a context is long, each of those features having a
-        # context that overlaps a bit the context of the previous feature.
-        tokenized_examples = tokenizer(
-            examples[question_column_name if pad_on_right else context_column_name],
-            examples[context_column_name if pad_on_right else question_column_name],
-            truncation="only_second" if pad_on_right else "only_first",
-            max_length=max_seq_length,
-            stride=args.doc_stride,
-            return_overflowing_tokens=True,
-            return_offsets_mapping=True,
-            padding="max_length" if args.pad_to_max_length else False,
-        )
-
-        # Since one example might give us several features if it has a long context, we need a map from a feature to
-        # its corresponding example. This key gives us just that.
-        sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
-        # The offset mappings will give us a map from token to character position in the original context. This will
-        # help us compute the start_positions and end_positions.
-        offset_mapping = tokenized_examples.pop("offset_mapping")
-
-        # Let's label those examples!
-        tokenized_examples["start_positions"] = []
-        tokenized_examples["end_positions"] = []
-
-        for i, offsets in enumerate(offset_mapping):
-            # We will label impossible answers with the index of the CLS token.
-            input_ids = tokenized_examples["input_ids"][i]
-            cls_index = input_ids.index(tokenizer.cls_token_id)
-
-            # Grab the sequence corresponding to that example (to know what is the context and what is the question).
-            sequence_ids = tokenized_examples.sequence_ids(i)
-
-            # One example can give several spans, this is the index of the example containing this span of text.
-            sample_index = sample_mapping[i]
-            answers = examples[answer_column_name][sample_index]
-            # If no answers are given, set the cls_index as answer.
-            if len(answers["answer_start"]) == 0:
-                tokenized_examples["start_positions"].append(cls_index)
-                tokenized_examples["end_positions"].append(cls_index)
-            else:
-                # Start/end character index of the answer in the text.
-                start_char = answers["answer_start"][0]
-                end_char = start_char + len(answers["text"][0])
-
-                # Start token index of the current span in the text.
-                token_start_index = 0
-                while sequence_ids[token_start_index] != (1 if pad_on_right else 0):
-                    token_start_index += 1
-
-                # End token index of the current span in the text.
-                token_end_index = len(input_ids) - 1
-                while sequence_ids[token_end_index] != (1 if pad_on_right else 0):
-                    token_end_index -= 1
-
-                # Detect if the answer is out of the span (in which case this feature is labeled with the CLS index).
-                if not (offsets[token_start_index][0] <= start_char and offsets[token_end_index][1] >= end_char):
-                    tokenized_examples["start_positions"].append(cls_index)
-                    tokenized_examples["end_positions"].append(cls_index)
-                else:
-                    # Otherwise move the token_start_index and token_end_index to the two ends of the answer.
-                    # Note: we could go after the last offset if the answer is the last word (edge case).
-                    while token_start_index < len(offsets) and offsets[token_start_index][0] <= start_char:
-                        token_start_index += 1
-                    tokenized_examples["start_positions"].append(token_start_index - 1)
-                    while offsets[token_end_index][1] >= end_char:
-                        token_end_index -= 1
-                    tokenized_examples["end_positions"].append(token_end_index + 1)
-
-        return tokenized_examples
-
 
     train_dataset = raw_datasets
     if args.max_train_samples != 0:
@@ -519,18 +380,6 @@ def main():
         train_dataset = train_dataset.select(range(args.max_train_samples))
 
     # Create train feature from dataset
-    with accelerator.main_process_first():
-        train_dataset = train_dataset.map(
-            prepare_train_features,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not args.overwrite_cache,
-            desc="Running tokenizer on train dataset",
-        )
-        if args.max_train_samples != 0:
-            # Number of samples might increase during Feature Creation, We select only specified max samples
-            train_dataset = train_dataset.select(range(args.max_train_samples))
 
     # Validation preprocessing
     def prepare_validation_features(examples):
@@ -628,11 +477,6 @@ def main():
         eval_dataset_for_model, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
     )
 
-    if args.do_predict:
-        predict_dataset_for_model = predict_dataset.remove_columns(["example_id", "offset_mapping"])
-        predict_dataloader = DataLoader(
-            predict_dataset_for_model, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
-        )
 
     # Post-processing:
     def post_processing_function(examples, features, predictions, stage="eval"):
@@ -853,41 +697,6 @@ def main():
         with open(args.output_log_file, "a") as log_file_fr:
             log_file_fr.write(f"epoch {epoch} end \n")
         print(f"epoch {epoch} end \n")
-
-    # Prediction
-    if args.do_predict:
-        logger.info("***** Running Prediction *****")
-        logger.info(f"  Num examples = {len(predict_dataset)}")
-        logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
-
-        all_start_logits = []
-        all_end_logits = []
-        for step, batch in enumerate(predict_dataloader):
-            with torch.no_grad():
-                outputs = model(**batch)
-                start_logits = outputs.start_logits
-                end_logits = outputs.end_logits
-
-                if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
-                    start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
-                    end_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
-
-                all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
-                all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
-
-        max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
-        # concatenate the numpy array
-        start_logits_concat = create_and_fill_np_array(all_start_logits, predict_dataset, max_len)
-        end_logits_concat = create_and_fill_np_array(all_end_logits, predict_dataset, max_len)
-
-        # delete the list of numpy arrays
-        del all_start_logits
-        del all_end_logits
-
-        outputs_numpy = (start_logits_concat, end_logits_concat)
-        prediction = post_processing_function(predict_examples, predict_dataset, outputs_numpy)
-        predict_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
-        logger.info(f"Predict metrics: {predict_metric}")
 
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
