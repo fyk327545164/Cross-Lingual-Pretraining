@@ -1872,9 +1872,18 @@ class BertForQuestionAnswering(BertPreTrainedModel):
         sequence_output = outputs[0]
 
         logits = self.qa_outputs(sequence_output)
+
+        print("logits.size()", logits.size())
+
         start_logits, end_logits = logits.split(1, dim=-1)
+        print("start_logits.size()", start_logits.size())
+        print("end_logits.size()", end_logits.size())
+
         start_logits = start_logits.squeeze(-1).contiguous()
         end_logits = end_logits.squeeze(-1).contiguous()
+        print("start_logits.size()", start_logits.size())
+        print("end_logits.size()", end_logits.size())
+
 
         total_loss = None
         if start_positions is not None and end_positions is not None:
@@ -1884,9 +1893,16 @@ class BertForQuestionAnswering(BertPreTrainedModel):
             if len(end_positions.size()) > 1:
                 end_positions = end_positions.squeeze(-1)
             # sometimes the start/end positions are outside our model inputs, we ignore these terms
+
+            print("start_logits.size()", start_logits.size())
+            print("end_logits.size()", end_logits.size())
             ignored_index = start_logits.size(1)
+            print("start_positions.size()", start_positions.size())
+            print("end_positions.size()", end_positions.size())
             start_positions = start_positions.clamp(0, ignored_index)
             end_positions = end_positions.clamp(0, ignored_index)
+            print("start_positions.size()", start_positions.size())
+            print("end_positions.size()", end_positions.size())
 
             loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
             start_loss = loss_fct(start_logits, start_positions)
