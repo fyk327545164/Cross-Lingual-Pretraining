@@ -551,7 +551,6 @@ class BertEncoder(nn.Module):
             eng_hidden_states=None,
             eng_attention_mask=None,
             eng_original_mask=None,
-            original_mask=None
     ):
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -569,14 +568,7 @@ class BertEncoder(nn.Module):
             _hidden_states = None
             _eng_hidden_states = None
             if eng_hidden_states is not None:
-
-                # i《 6 comment 写错了？
-                # 前六层算？ 只算6成？
                 if i < 6:
-                    # hidden_states_weights = torch.matmul(eng_hidden_states, hidden_states.transpose(-1, -2))
-                    # hidden_states_probs = nn.functional.softmax(
-                    #    hidden_states_weights / math.sqrt(768) + (original_mask.unsqueeze(-2) - 1) * 1e9, dim=-1)
-                    # eng_hidden_states = torch.matmul(hidden_states_probs, hidden_states)
                     _hidden_states_weights = torch.matmul(hidden_states, eng_hidden_states.transpose(-1, -2))
                     _hidden_states_probs = nn.functional.softmax(
                         _hidden_states_weights / math.sqrt(768) + (eng_original_mask.unsqueeze(-2) - 1) * 1e9, dim=-1)
@@ -593,23 +585,7 @@ class BertEncoder(nn.Module):
                 )
 
                 eng_hidden_states = eng_layer_outputs[0]
-                # 写错了？
-                if False:  # i >= 8:
-                    hidden_states_weights = torch.matmul(hidden_states, eng_hidden_states.transpose(-1, -2))
-                    hidden_states_probs = nn.functional.softmax(
-                        hidden_states_weights / math.sqrt(768) + (eng_original_mask.unsqueeze(-2) - 1) * 1e9, dim=-1)
-                    # prob_np =  hidden_states_probs.cpu().detach().numpy()
-                    # entropy = []
-                    # for _index in range(len(prob_np)):
-                    #    prob = prob_np[_index] + 1e-9
-                    #    #print(prob)
-                    #    index= int(torch.sum(original_mask[_index]).item())
-                    #    #print(index)
-                    #    _entropy = np.average(np.sum(np.log(prob[:index]) * prob[:index] * -1, -1))
-                    #    #print(_entropy)
-                    #    entropy.append(_entropy)
-                    # print(i, sum(entropy)/len(entropy))
-                    hidden_states = torch.matmul(hidden_states_probs, eng_hidden_states)
+
 
             layer_outputs = layer_module(
                 _hidden_states if _hidden_states is not None else hidden_states,
