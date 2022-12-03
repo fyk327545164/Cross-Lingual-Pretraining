@@ -316,7 +316,7 @@ def main():
     accelerator.wait_for_everyone()
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_from_disk(f"/content/drive/MyDrive/CS546/data/squad_{args.eval_lang}_{args.ratio}")
+        raw_datasets = load_from_disk(f"/content/drive/MyDrive/CS546/data/baseline/squad_{args.eval_lang}_{args.ratio}")
         valid_datasets = load_dataset("xquad", f"xquad.{args.eval_lang}")["validation"]
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
