@@ -1070,7 +1070,7 @@ class BertModel(BertPreTrainedModel):
         sequence_output = encoder_outputs[0]
         # pooled_output = self.pooler(sequence_output[:, :128, :]) if self.pooler is not None else None
         # pooled_output_eng = None
-        # if eng_input_ids is not None: 
+        # if eng_input_ids is not None:
         #     pooled_output_eng = self.pooler(sequence_output[:, 128:, :]) if self.pooler is not None else None
         # if not return_dict:
         return sequence_output  # , pooled_output, pooled_output_eng) + encoder_outputs[1:]
@@ -1899,6 +1899,8 @@ class BertForQuestionAnswering(BertPreTrainedModel):
             if len(end_positions.size()) > 1:
                 end_positions = end_positions.squeeze(-1)
             # sometimes the start/end positions are outside our model inputs, we ignore these terms
+            print(start_logits.size)
+            print("Dimension out of range (expected to be in range of [-1, 0], but got 1)")
             ignored_index = start_logits.size(1)
             start_positions = start_positions.clamp(0, ignored_index)
             end_positions = end_positions.clamp(0, ignored_index)
