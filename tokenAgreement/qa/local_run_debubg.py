@@ -435,14 +435,14 @@ def main():
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
             return_offsets_mapping=True,
-            padding="max_length" if args.pad_to_max_length else False,
+            padding="max_length",
         )
         tokenized_original = tokenizer(
             original_questions if pad_on_right else original_contexts,
             original_contexts if pad_on_right else original_questions,
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
-            padding="max_length" if args.pad_to_max_length else False,
+            padding="max_length",
         )
         tokenized_examples["eng_input_ids"] = tokenized_original['input_ids']
         tokenized_examples["eng_attention_mask"] = tokenized_original['attention_mask']
@@ -679,11 +679,11 @@ def main():
     pretrained_params = []
     finetune_params = []
 
-    for (name, p) in model.named_parameters():
-        if "bert" in name:
-            pretrained_params.append(p)
-        else:
-            finetune_params.append(p)
+    # for (name, p) in model.named_parameters():
+    #     if "bert" in name:
+    #         pretrained_params.append(p)
+    #     else:
+    #         finetune_params.append(p)
 
     optimizer = AdamW(
         [{'params': pretrained_params, 'lr': args.learning_rate_pre_train},
@@ -694,9 +694,7 @@ def main():
     # Split weights in two groups, one with weight decay and the other not.
 
     # Prepare everything with our `accelerator`.
-    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader
-    )
+
 
     # Note -> the training dataloader needs to be prepared before we grab his length below (cause its length will be
     # shorter in multiprocess)
@@ -708,65 +706,65 @@ def main():
     else:
         args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
-    def run_eval():
-        # Evaluation
-        logger.info("\n***** Running Evaluation *****")
-        logger.info(f"  Num examples = {len(eval_dataset)}")
-        logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
-
-        model.eval()
-        all_start_logits = []
-        all_end_logits = []
-        for step, batch in enumerate(eval_dataloader):
-            with torch.no_grad():
-                outputs = model(**batch)
-                start_logits = outputs.start_logits
-                end_logits = outputs.end_logits
-
-                if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
-                    start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
-                    end_logits = accelerator.pad_across_processes(end_logits, dim=1, pad_index=-100)
-
-                all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
-                all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
-
-        max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
-
-        # concatenate the numpy array
-        start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len)
-        end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len)
-
-        # delete the list of numpy arrays
-        del all_start_logits
-        del all_end_logits
-
-        outputs_numpy = (start_logits_concat, end_logits_concat)
-        prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
-        eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
-        logger.info(f"Evaluation metrics: {eval_metric}")
-        with open(args.output_log_file, "a") as log_file_fr:
-            log_file_fr.write(f"eval:-------")
-            log_file_fr.write(f"\n Evaluation metrics: {eval_metric}")
-            log_file_fr.write(f"train:-----")
-
-        model.train()
-        f = eval_metric["f1"]
-
-        return f
+    # def run_eval():
+    #     # Evaluation
+    #     logger.info("\n***** Running Evaluation *****")
+    #     logger.info(f"  Num examples = {len(eval_dataset)}")
+    #     logger.info(f"  Batch size = {args.per_device_eval_batch_size}")
+    #
+    #     model.eval()
+    #     all_start_logits = []
+    #     all_end_logits = []
+    #     for step, batch in enumerate(eval_dataloader):
+    #         with torch.no_grad():
+    #             outputs = model(**batch)
+    #             start_logits = outputs.start_logits
+    #             end_logits = outputs.end_logits
+    #
+    #             if not args.pad_to_max_length:  # necessary to pad predictions and labels for being gathered
+    #                 start_logits = accelerator.pad_across_processes(start_logits, dim=1, pad_index=-100)
+    #                 end_logits = accelerator.pad_across_processes(end_logits, dim=1, pad_index=-100)
+    #
+    #             all_start_logits.append(accelerator.gather(start_logits).cpu().numpy())
+    #             all_end_logits.append(accelerator.gather(end_logits).cpu().numpy())
+    #
+    #     max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor
+    #
+    #     # concatenate the numpy array
+    #     start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len)
+    #     end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len)
+    #
+    #     # delete the list of numpy arrays
+    #     del all_start_logits
+    #     del all_end_logits
+    #
+    #     outputs_numpy = (start_logits_concat, end_logits_concat)
+    #     prediction = post_processing_function(eval_examples, eval_dataset, outputs_numpy)
+    #     eval_metric = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
+    #     logger.info(f"Evaluation metrics: {eval_metric}")
+    #     with open(args.output_log_file, "a") as log_file_fr:
+    #         log_file_fr.write(f"eval:-------")
+    #         log_file_fr.write(f"\n Evaluation metrics: {eval_metric}")
+    #         log_file_fr.write(f"train:-----")
+    #
+    #     model.train()
+    #     f = eval_metric["f1"]
+    #
+    #     return f
 
     # Train!
-    total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+    # total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+    # logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
 
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
+    progress_bar = tqdm(range(args.max_train_steps))
     completed_steps = 0
 
     os.makedirs(os.path.dirname(args.output_log_file), exist_ok=True)
@@ -780,7 +778,7 @@ def main():
         if if_exit:
             break
 
-        model.train()
+        # model.train()
         epoch_loss = 0
         epoch_step = 0
 

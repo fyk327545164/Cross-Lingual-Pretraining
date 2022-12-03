@@ -456,14 +456,14 @@ def main():
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
             return_offsets_mapping=True,
-            padding="max_length" if args.pad_to_max_length else False,
+            padding="max_length",
         )
         tokenized_original = tokenizer(
             original_questions if pad_on_right else original_contexts,
             original_contexts if pad_on_right else original_questions,
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
-            padding="max_length" if args.pad_to_max_length else False,
+            padding="max_length",
         )
         tokenized_examples["eng_input_ids"] = tokenized_original['input_ids']
         tokenized_examples["eng_attention_mask"] = tokenized_original['attention_mask']
@@ -518,7 +518,7 @@ def main():
                     while offsets[token_end_index][1] >= end_char:
                         token_end_index -= 1
                     tokenized_examples["end_positions"].append(token_end_index + 1)
-        return tokenized_examples   
+        return tokenized_examples
 
     if "train" not in raw_datasets:
         raise ValueError("--do_train requires a train dataset")
