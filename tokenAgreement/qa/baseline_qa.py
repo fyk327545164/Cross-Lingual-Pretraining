@@ -9,7 +9,7 @@ from pathlib import Path
 import datasets
 import numpy as np
 import torch
-from datasets import load_dataset, load_metric
+from datasets import load_dataset, load_metric, load_from_disk
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -316,18 +316,8 @@ def main():
     accelerator.wait_for_everyone()
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
+        raw_datasets = load_from_disk(f"/content/drive/MyDrive/CS546/data/squad_{args.eval_lang}_{args.ratio}")
         valid_datasets = load_dataset("xquad", f"xquad.{args.eval_lang}")["validation"]
-    else:
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        if args.test_file is not None:
-            data_files["test"] = args.test_file
-        extension = args.train_file.split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files, field="data")
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
@@ -365,12 +355,12 @@ def main():
 
     # Preprocessing the datasets.
     # Preprocessing is slight different for training and evaluation.
-    column_names = raw_datasets["train"].column_names
+
     valid_column_names = valid_datasets.column_names
 
-    question_column_name = "question" if "question" in column_names else column_names[0]
-    context_column_name = "context" if "context" in column_names else column_names[1]
-    answer_column_name = "answers" if "answers" in column_names else column_names[2]
+    question_column_name = "question"
+    context_column_name = "context"
+    answer_column_name = "answers"
 
     # Padding side determines if we do (question|context) or (context|question).
     pad_on_right = tokenizer.padding_side == "right"
@@ -522,9 +512,8 @@ def main():
 
         return tokenized_examples
 
-    if "train" not in raw_datasets:
-        raise ValueError("--do_train requires a train dataset")
-    train_dataset = raw_datasets["train"]
+
+    train_dataset = raw_datasets
     if args.max_train_samples != 0:
         # We will select sample from whole data if agument is specified
         train_dataset = train_dataset.select(range(args.max_train_samples))
@@ -590,8 +579,7 @@ def main():
 
         return tokenized_examples
 
-    if "validation" not in raw_datasets:
-        raise ValueError("--do_eval requires a validation dataset")
+
 
     eval_examples = valid_datasets
     if args.max_eval_samples != 0 :
@@ -614,26 +602,7 @@ def main():
         # During Feature creation dataset samples might increase, we will select required samples again
         eval_dataset = eval_dataset.select(range(args.max_eval_samples))
 
-    if args.do_predict:
-        if "test" not in raw_datasets:
-            raise ValueError("--do_predict requires a test dataset")
-        predict_examples = raw_datasets["test"]
-        if args.max_predict_samples is not None:
-            # We will select sample from whole data
-            predict_examples = predict_examples.select(range(args.max_predict_samples))
-        # Predict Feature Creation
-        with accelerator.main_process_first():
-            predict_dataset = predict_examples.map(
-                prepare_validation_features,
-                batched=True,
-                num_proc=args.preprocessing_num_workers,
-                remove_columns=column_names,
-                load_from_cache_file=not args.overwrite_cache,
-                desc="Running tokenizer on prediction dataset",
-            )
-            if args.max_predict_samples is not None:
-                # During Feature creation dataset samples might increase, we will select required samples again
-                predict_dataset = predict_dataset.select(range(args.max_predict_samples))
+
 
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
