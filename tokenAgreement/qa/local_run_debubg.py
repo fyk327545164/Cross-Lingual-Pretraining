@@ -7,7 +7,7 @@ import random
 import datasets
 import numpy as np
 import torch
-from datasets import load_dataset, load_metric
+from datasets import load_dataset, load_metric, load_from_disk
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -302,7 +302,7 @@ def main():
 
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
+        raw_datasets = load_from_disk("squad_ar_5")
         valid_datasets = load_dataset("xquad", f"xquad.{args.eval_lang}")["validation"]
     else:
         data_files = {}
@@ -344,12 +344,14 @@ def main():
 
     # Preprocessing the datasets.
     # Preprocessing is slight different for training and evaluation.
-    column_names = raw_datasets["train"].column_names
+    # column_names = raw_datasets["train"].column_names
     valid_column_names = valid_datasets.column_names
-    question_column_name = "question" if "question" in column_names else column_names[0]
-    context_column_name = "context" if "context" in column_names else column_names[1]
-    answer_column_name = "answers" if "answers" in column_names else column_names[2]
-
+    # question_column_name = "question" if "question" in column_names else column_names[0]
+    # context_column_name = "context" if "context" in column_names else column_names[1]
+    # answer_column_name = "answers" if "answers" in column_names else column_names[2]
+    question_column_name = "question"
+    context_column_name = "context"
+    answer_column_name = "answers"
     # Padding side determines if we do (question|context) or (context|question).
     pad_on_right = tokenizer.padding_side == "right"
 
@@ -500,20 +502,23 @@ def main():
         return tokenized_examples
 
 
-    if "train" not in raw_datasets:
-        raise ValueError("--do_train requires a train dataset")
-    train_dataset = raw_datasets["train"]
+    # if "train" not in raw_datasets:
+    #     raise ValueError("--do_train requires a train dataset")
+    # train_dataset = raw_datasets["train"]
+    train_dataset = raw_datasets
+    # train_dataset.save_to_disk("squad_ar_5")
 
     # Create train feature from dataset
 
-    train_dataset = train_dataset.map(
-        prepare_train_features,
-        batched=True,
-        num_proc=1,
-        remove_columns=column_names,
-        load_from_cache_file=not args.overwrite_cache,
-        desc="Running tokenizer on train dataset",
-    )
+    # train_dataset = train_dataset.map(
+    #     prepare_train_features,
+    #     batched=True,
+    #     num_proc=1,
+    #     remove_columns=column_names,
+    #     load_from_cache_file=not args.overwrite_cache,
+    #     desc="Running tokenizer on train dataset",
+    # )
+    train_dataset
     if args.max_train_samples != 0:
         # Number of samples might increase during Feature Creation, We select only specified max samples
         train_dataset = train_dataset.select(range(args.max_train_samples))
@@ -565,8 +570,8 @@ def main():
 
         return tokenized_examples
 
-    if "validation" not in raw_datasets:
-        raise ValueError("--do_eval requires a validation dataset")
+    # if "validation" not in raw_datasets:
+    #     raise ValueError("--do_eval requires a validation dataset")
 
     eval_examples = valid_datasets
     if args.max_eval_samples != 0 :
