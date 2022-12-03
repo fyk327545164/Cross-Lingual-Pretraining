@@ -418,6 +418,7 @@ def main():
             answers_start = examples[answer_column_name][idx]["answer_start"][0]
             answer_range = (answers_start, answers_start + len(answers_text))
 
+            original_question = examples[question_column_name][idx][:]
             question_tokens = examples[question_column_name][idx].split()
             for token_idx in range(len(question_tokens)):
                 cur_token = question_tokens[token_idx].lower()
@@ -426,7 +427,7 @@ def main():
                         question_tokens[token_idx] = random.choice(aligned_tokens_table[cur_token])
             examples[question_column_name][idx] = " ".join(question_tokens)
 
-            orginal_context = examples[context_column_name][idx][:]
+            original_context = examples[context_column_name][idx][:]
 
             for token_idx in range(len(context_tokens)):
                 cur_token, cur_token_idx = context_tokens[token_idx], context_tokens_idx[token_idx]
@@ -869,7 +870,6 @@ def main():
             if completed_steps >= args.max_train_steps:
                 break
 
-        f = run_eval()
         if args.eval_interval != -1 and completed_steps % args.eval_interval == 0:
             f = run_eval()
             if f > max_f1:
