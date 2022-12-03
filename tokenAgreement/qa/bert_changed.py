@@ -1065,13 +1065,12 @@ class BertModel(BertPreTrainedModel):
             eng_hidden_states=eng_embedding_output,
             eng_attention_mask=eng_extended_attention_mask,
             eng_original_mask=eng_attention_mask,
-            original_mask=attention_mask
         )
         # rint(encoder_outputs)
         sequence_output = encoder_outputs[0]
         # pooled_output = self.pooler(sequence_output[:, :128, :]) if self.pooler is not None else None
         # pooled_output_eng = None
-        # if eng_input_ids is not None:
+        # if eng_input_ids is not None: 
         #     pooled_output_eng = self.pooler(sequence_output[:, 128:, :]) if self.pooler is not None else None
         # if not return_dict:
         return sequence_output  # , pooled_output, pooled_output_eng) + encoder_outputs[1:]
