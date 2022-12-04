@@ -276,9 +276,9 @@ def main():
     args = parse_args()
 
     if args.ratio == 0:
-        check_point_folder = f"../../../drive/MyDrive/CS546/ckpt/mbert/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
+        check_point_folder = f"drive/MyDrive/CS546/ckpt_cross/mbert/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
     else:
-        check_point_folder = f"../../../drive/MyDrive/CS546/ckpt/mbert_{args.ratio}/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
+        check_point_folder = f"drive/MyDrive/CS546/ckpt_cross/mbert_{args.ratio}/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
     if args.replace_table_file is not None:
         with open(args.replace_table_file, "rb") as fr:
             aligned_tokens_table = pickle.load(fr)
@@ -396,7 +396,6 @@ def main():
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
             stride=args.doc_stride,
-            return_overflowing_tokens=True,
             return_offsets_mapping=True,
             padding="max_length" if args.pad_to_max_length else False,
         )
@@ -408,16 +407,17 @@ def main():
         # For evaluation, we will need to convert our predictions to substrings of the context, so we keep the
         # corresponding example_id and we will store the offset mappings.
         tokenized_examples["example_id"] = []
-
+        tokenized_examples["eng_input_ids"] = tokenized_examples['input_ids'][:]
+        tokenized_examples["eng_attention_mask"] = tokenized_examples['attention_mask'][:]
+        tokenized_examples["eng_token_type_ids"] = tokenized_examples['token_type_ids'][:]
         for i in range(len(tokenized_examples["input_ids"])):
             # Grab the sequence corresponding to that example (to know what is the context and what is the question).
             sequence_ids = tokenized_examples.sequence_ids(i)
             context_index = 1 if pad_on_right else 0
 
             # One example can give several spans, this is the index of the example containing this span of text.
-            sample_index = sample_mapping[i]
-            tokenized_examples["example_id"].append(examples["id"][sample_index])
-
+            # sample_index = sample_mapping[i]
+            tokenized_examples["example_id"].append(examples["id"][i])
             # Set to None the offset_mapping that are not part of the context so it's easy to determine if a token
             # position is part of the context or not.
             tokenized_examples["offset_mapping"][i] = [
@@ -474,12 +474,6 @@ def main():
     eval_dataloader = DataLoader(
         eval_dataset_for_model, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
     )
-
-    if args.do_predict:
-        predict_dataset_for_model = predict_dataset.remove_columns(["example_id", "offset_mapping"])
-        predict_dataloader = DataLoader(
-            predict_dataset_for_model, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
-        )
 
     # Post-processing:
     def post_processing_function(examples, features, predictions, stage="eval"):
