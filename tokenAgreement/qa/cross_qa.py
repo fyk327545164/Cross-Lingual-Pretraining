@@ -79,7 +79,6 @@ class ReverseSqrtScheduler:
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a Question Answering task")
     parser.add_argument('--ratio', required=True, type=int)
-    parser.add_argument("--replace_table_file", type=str, default=None)
     parser.add_argument('--loss_interval', required=True, type=int)
     parser.add_argument('--eval_interval', default=-1, type=int)
     parser.add_argument("--output_log_file", type=str, required=True)
@@ -279,15 +278,6 @@ def main():
         check_point_folder = f"drive/MyDrive/CS546/ckpt_cross/mbert/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
     else:
         check_point_folder = f"drive/MyDrive/CS546/ckpt_cross/mbert_{args.ratio}/eval-lang{args.eval_lang}_lrft{args.learning_rate_fine_tune}_lrpt{args.learning_rate_fine_tune}_btachsize{args.per_device_train_batch_size}_"
-    if args.replace_table_file is not None:
-        with open(args.replace_table_file, "rb") as fr:
-            aligned_tokens_table = pickle.load(fr)
-    else:
-        aligned_tokens_table = {}
-
-    random_index = [0 for _ in range(args.ratio)] + [1 for _ in range(10 - args.ratio)]
-    random.shuffle(random_index)
-
     accelerator = Accelerator()
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -402,14 +392,11 @@ def main():
 
         # Since one example might give us several features if it has a long context, we need a map from a feature to
         # its corresponding example. This key gives us just that.
-        sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
 
         # For evaluation, we will need to convert our predictions to substrings of the context, so we keep the
         # corresponding example_id and we will store the offset mappings.
         tokenized_examples["example_id"] = []
-        tokenized_examples["eng_input_ids"] = tokenized_examples['input_ids'][:]
-        tokenized_examples["eng_attention_mask"] = tokenized_examples['attention_mask'][:]
-        tokenized_examples["eng_token_type_ids"] = tokenized_examples['token_type_ids'][:]
+
         for i in range(len(tokenized_examples["input_ids"])):
             # Grab the sequence corresponding to that example (to know what is the context and what is the question).
             sequence_ids = tokenized_examples.sequence_ids(i)
